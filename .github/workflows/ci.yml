@@ -1,0 +1,42 @@
+name: SEMPER-FI checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      ENVIRONMENT: test
+      AUTH_MODE: development
+      ALLOW_DEVELOPMENT_IDENTITY_HEADERS: 'true'
+      DATABASE_URL: sqlite+aiosqlite:///./semperfi-test.db
+      REDIS_URL: redis://127.0.0.1:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+      - name: Frontend checks
+        working-directory: front-end
+        run: |
+          npm ci
+          npm run check
+          npm test
+      - name: Backend dependencies
+        working-directory: back-end
+        run: uv sync --locked --all-groups
+      - name: Backend checks
+        working-directory: back-end
+        run: |
+          uv run ruff check app tests
+          uv run python -m compileall -q app tests
+          uv run pytest -q
+      - name: Build backend image
+        run: docker build -t semperfi-api:ci back-end
+      - name: Build frontend image
+        run: docker build -t semperfi-web:ci front-end

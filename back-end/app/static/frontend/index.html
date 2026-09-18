@@ -1,0 +1,69 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="SEMPER-FI: gestão jurídica, investigações e evidências em um único espaço de trabalho.">
+<meta name="color-scheme" content="dark">
+<title>SEMPER-FI — FORSETI Technologies ® · Aprovado ABDCRIM ®</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/css/style.css">
+<link rel="stylesheet" href="assets/css/interface.css">
+<link rel="stylesheet" href="assets/css/commercial.css">
+<script src="assets/js/commercial.js" defer></script>
+<script src="assets/js/auth.js" defer></script>
+</head>
+<body class="auth-pending" data-page="app">
+<div class="auth-gate"><span class="brand-symbol" aria-hidden="true">Σ</span><h1>SEMPER-FI</h1><p id="authStatus" role="status" aria-live="polite">Verificando sua sessão…</p><button class="btn btn-secondary" id="authRetry" hidden>Tentar novamente</button><p><a class="btn-link" href="login.html">Voltar ao acesso</a></p></div>
+<a class="skip-link" href="#mainContent">Pular para o conteúdo</a>
+<button class="sidebar-backdrop" id="sidebarBackdrop" aria-label="Fechar navegação" tabindex="-1"></button>
+<aside class="sidebar" id="sidebar" aria-label="Navegação principal">
+  <div class="sidebar-header">
+    <div class="sidebar-logo" title="FORSETI Technologies ® · ABDCRIM ®"><span style="font-size:20px">Σ</span><span class="sidebar-logo-text">SEMPER-FI</span></div>
+    <button class="sidebar-toggle" id="sidebarToggle" title="Recolher" aria-label="Recolher navegação" aria-controls="sidebarNav" aria-expanded="true">☰</button>
+  </div>
+  <ul class="sidebar-nav" id="sidebarNav"></ul>
+</aside>
+<div class="main-wrapper">
+  <header class="topbar">
+    <div class="topbar-left">
+      <button class="icon-btn mobile-menu-toggle" id="mobileMenuToggle" aria-label="Abrir navegação" aria-controls="sidebar" aria-expanded="false">☰</button>
+      <input type="search" class="search-box" id="globalSearch" aria-label="Buscar nos registros" placeholder="Buscar cliente, processo, CPF/CNPJ…" autocomplete="off">
+    </div>
+    <div class="topbar-right">
+      <div class="topbar-meters" id="topbarMeters"></div>
+      <button class="btn-new" id="btnNew">+ Novo registro</button>
+      <span class="demo-badge" title="FORSETI Technologies ® · CNPJ 66.603.219/0001-93 — Aprovado por ABDCRIM ® · CNPJ 55.739.503/0001-75">FORSETI · ABDCRIM</span>
+      <button class="icon-btn" id="maskToggle" title="Alternar mascaramento de dados sensíveis" aria-label="Mascarar dados sensíveis" aria-pressed="true">👁</button>
+      <div style="position:relative">
+        <button class="icon-btn" id="notificationBtn" title="Notificações" aria-label="Notificações" aria-controls="notifPanel" aria-expanded="false">🔔<span class="notification-badge" id="notifBadge">0</span></button>
+        <div class="notif-panel" id="notifPanel">
+          <div class="notif-header"><strong>Notificações</strong><button class="btn-link" id="clearNotifs">Limpar todas</button></div>
+          <div class="notif-list" id="notifList"></div>
+        </div>
+      </div>
+      <div class="dropdown">
+        <button class="icon-btn" id="profileBtn" title="Conta" aria-label="Menu da conta" aria-controls="profileMenu" aria-expanded="false">👤</button>
+        <div class="dropdown-menu" id="profileMenu">
+          <button class="dropdown-item" data-action="profile">👤 Meu Perfil</button>
+          <button class="dropdown-item" data-action="prefs">⚙️ Preferências</button>
+          <button class="dropdown-item" data-action="export">📤 Exportar dados (JSON)</button>
+          <button class="dropdown-item" data-action="import">📥 Importar clientes e processos</button>
+          <button class="dropdown-item danger" data-action="logout">↪ Sair da conta</button>
+        </div>
+      </div>
+    </div>
+  </header>
+  <main class="content-area" id="mainContent" tabindex="-1">
+    <div class="content-wrapper" id="contentWrapper"></div>
+  </main>
+</div>
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-label="Detalhes do registro"><div class="modal-content" id="modalContent" tabindex="-1"></div></div>
+<div class="toast-container" id="toastContainer" role="status" aria-live="polite"></div>
+<input type="file" id="fileImport" style="display:none" accept=".json">
+<noscript>Ative o JavaScript para acessar o SEMPER-FI.</noscript>
+</body>
+</html>
+

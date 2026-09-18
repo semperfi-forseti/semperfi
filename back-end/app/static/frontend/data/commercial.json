@@ -1,0 +1,48 @@
+{
+  "currency": "BRL",
+  "plans": [
+    {"key":"lite","name":"Lite","price":89.90,"seats":1,"storedProcesses":150,"monitoredProcesses":100,"evidenceGB":3,"credits":5,"featured":false},
+    {"key":"profissional","name":"Profissional","price":159.90,"seats":1,"storedProcesses":500,"monitoredProcesses":300,"evidenceGB":15,"credits":20,"featured":true},
+    {"key":"escritorio","name":"Escritório","price":329.90,"seats":3,"storedProcesses":2000,"monitoredProcesses":1000,"evidenceGB":75,"credits":60,"featured":false},
+    {"key":"equipe","name":"Equipe","price":699.90,"seats":10,"storedProcesses":7500,"monitoredProcesses":3000,"evidenceGB":300,"credits":180,"featured":false},
+    {"key":"corporate","name":"Corporate","price":null,"seats":null,"storedProcesses":null,"monitoredProcesses":null,"evidenceGB":null,"credits":null,"featured":false}
+  ],
+  "addons": [
+    {"key":"mon_100","name":"+100 processos monitorados","unit":100,"price":29.90,"target":"monitoredProcesses"},
+    {"key":"mon_500","name":"+500 processos monitorados","unit":500,"price":119.90,"target":"monitoredProcesses"},
+    {"key":"mon_1000","name":"+1.000 processos monitorados","unit":1000,"price":199.90,"target":"monitoredProcesses"},
+    {"key":"sto_500","name":"+500 processos armazenados","unit":500,"price":19.90,"target":"storedProcesses"},
+    {"key":"evi_10gb","name":"+10 GB de evidências","unit":10,"price":14.90,"target":"evidenceGB"},
+    {"key":"evi_100gb","name":"+100 GB de evidências","unit":100,"price":89.90,"target":"evidenceGB"},
+    {"key":"seat_user","name":"Usuário adicional","unit":1,"price":39.90,"target":"seats"},
+    {"key":"seat_audit","name":"Usuário adicional (auditoria)","unit":1,"price":59.90,"target":"seats"}
+  ],
+  "creditPackages": [
+    {"key":"cp10","credits":10,"price":24.90,"unit":2.49},
+    {"key":"cp50","credits":50,"price":99.90,"unit":2.00},
+    {"key":"cp150","credits":150,"price":239.90,"unit":1.60},
+    {"key":"cp500","credits":500,"price":699.90,"unit":1.40},
+    {"key":"cp1500","credits":1500,"price":1799.90,"unit":1.20}
+  ],
+  "diligenceRecharges": [
+    {"key":"dr50","name":"Saldo inicial","amount":50},
+    {"key":"dr100","name":"Saldo profissional","amount":100},
+    {"key":"dr250","name":"Saldo escritório","amount":250},
+    {"key":"dr500","name":"Saldo corporativo","amount":500}
+  ],
+  "creditOperations": [
+    {"key":"consulta_enriquecida","label":"Consulta pública enriquecida","credits":2},
+    {"key":"dossie_processual","label":"Dossiê processual público","credits":4},
+    {"key":"jurisprudencia","label":"Pesquisa jurisprudencial estruturada","credits":5},
+    {"key":"metadata_extracao","label":"Extração e análise de metadados","credits":3},
+    {"key":"relatorio_tecnico_pdf","label":"Relatório técnico com hash","credits":5},
+    {"key":"mapa_societario","label":"Mapa societário e vínculos","credits":8},
+    {"key":"rastro_digital","label":"Rastro digital de perfil/domínio","credits":12},
+    {"key":"investigacao_pessoa","label":"Investigação Pessoa 360°","credits":18},
+    {"key":"investigacao_empresa","label":"Investigação Empresa 360°","credits":25},
+    {"key":"investigacao_360","label":"Investigação 360° completa","credits":40},
+    {"key":"mapa_relacional","label":"Mapa relacional avançado","credits":15},
+    {"key":"analise_risco_hipoteses","label":"Análise de risco e hipóteses","credits":10}
+  ],
+  "diligenceFee": {"rate":0.15,"minimum":4.90}
+}

@@ -1,0 +1,14 @@
+{
+  "target": "dominio-demo.example",
+  "target_type": "domain",
+  "purpose": "Analise defensiva autorizada de exposicao digital demonstrativa",
+  "legal_basis": "legitimo_interesse",
+  "authorization_reference": "AUTH-DEMO-002",
+  "declared_scope": ["digital_defensive", "public_records"],
+  "connectors_allowed": ["rdap_dns"],
+  "risk_level": "high",
+  "seed_facts": {
+    "domain": "dominio-demo.example",
+    "owner_declared": "Cliente Demonstracao"
+  }
+}

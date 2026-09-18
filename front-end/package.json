@@ -1,0 +1,14 @@
+{
+  "name": "semperfi-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Frontend modular do sistema SEMPER-FI.",
+  "scripts": {
+    "dev": "node server.mjs",
+    "preview": "node server.mjs",
+    "check:syntax": "node scripts/check.mjs",
+    "check": "node scripts/check.mjs && node scripts/sync-backend.mjs --check",
+    "sync:backend": "node scripts/sync-backend.mjs",
+    "test": "node --test tests/*.test.cjs"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "target": "Empresa Aurora Demonstracao",
+  "target_type": "company",
+  "purpose": "Investigacao autorizada para due diligence juridica demonstrativa",
+  "legal_basis": "contrato",
+  "authorization_reference": "AUTH-DEMO-001",
+  "declared_scope": ["corporate", "public_records"],
+  "connectors_allowed": ["brasilapi", "datajud"],
+  "risk_level": "medium",
+  "seed_facts": {
+    "cnpj": "00000000000100",
+    "uf": "SP"
+  }
+}

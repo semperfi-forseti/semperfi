@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="login-document">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Conheça o SEMPER-FI: gestão de clientes, processos, prazos e investigações para advogados e escritórios. Compare planos e crie sua conta PF ou PJ com acesso em duas etapas.">
+  <meta name="color-scheme" content="dark">
+  <title>Entrar · SEMPER-FI</title>
+  <link rel="stylesheet" href="assets/css/style.css">
+  <link rel="stylesheet" href="assets/css/interface.css">
+  <link rel="stylesheet" href="assets/css/commercial.css">
+  <link rel="stylesheet" href="assets/css/public.css">
+  <script src="assets/js/commercial.js" defer></script>
+  <script src="assets/js/auth.js" defer></script>
+  <script src="assets/js/public.js" defer></script>
+</head>
+<body class="login-page" data-page="login">
+  <a class="skip-link" href="#account-access">Ir para o acesso à conta</a>
+  <header class="public-header">
+    <a class="brand-lockup" href="#login-top" aria-label="SEMPER-FI, início"><span class="brand-symbol" aria-hidden="true">Σ</span><span>SEMPER-FI<small>FORSETI TECHNOLOGIES</small></span></a>
+    <nav class="public-nav" aria-label="Conheça o SEMPER-FI">
+      <a href="#recursos">Recursos</a><a href="#como-funciona">Como começar</a><a href="#planos">Planos</a><a href="#duvidas">Dúvidas</a>
+    </nav>
+    <button class="btn btn-secondary public-signin" type="button" data-access-tab="login">Entrar <span aria-hidden="true">↗</span></button>
+  </header>
+  <main class="login-layout" id="login-top" tabindex="-1">
+    <section class="login-story" aria-labelledby="brand-heading">
+      <div class="story-content">
+        <span class="eyebrow">CENTRAL JURÍDICA OPERACIONAL</span>
+        <h1 id="brand-heading">Clareza para decidir.<br><span>Precisão para agir.</span></h1>
+        <p>Clientes, processos, prazos e informações do seu trabalho jurídico em um ambiente organizado. Para a atuação individual e para o seu escritório.</p>
+        <div class="public-hero-actions"><button class="btn btn-primary" type="button" data-access-tab="register">Criar minha conta <span aria-hidden="true">→</span></button><a class="btn btn-secondary" href="#planos">Conhecer os planos</a></div>
+        <p class="public-hero-note">Cadastro PF ou PJ · Confirmação por e-mail · Espaço da sua organização</p>
+        <a class="login-jump" href="#account-access">Acessar minha conta <span aria-hidden="true">↓</span></a>
+        <div class="login-capabilities">
+          <article><span aria-hidden="true">01</span><div><h2>Gestão conectada</h2><p>Clientes, processos e prazos no mesmo lugar.</p></div></article>
+          <article><span aria-hidden="true">02</span><div><h2>Investigação estruturada</h2><p>Fontes, contexto e revisão humana em cada etapa.</p></div></article>
+          <article><span aria-hidden="true">03</span><div><h2>Rastreabilidade</h2><p>Registros e evidências associados ao seu trabalho.</p></div></article>
+        </div>
+      </div>
+    </section>
+    <section class="login-access" id="account-access" aria-labelledby="access-heading" tabindex="-1">
+      <div class="access-card">
+        <div class="auth-tabs" role="tablist" aria-label="Acesso à conta">
+          <button id="loginTab" role="tab" aria-selected="true" aria-controls="loginPanel" type="button">Entrar</button>
+          <button id="registerTab" role="tab" aria-selected="false" aria-controls="registerPanel" tabindex="-1" type="button">Criar conta</button>
+        </div>
+        <span class="eyebrow">SEU ESPAÇO DE TRABALHO</span>
+        <h2 id="access-heading">Bem-vindo de volta</h2>
+        <p id="accessDescription" class="access-description">Acesse sua conta para continuar de onde parou.</p>
+        <div id="authStatus" class="auth-status" role="status" aria-live="polite">Verificando as opções de acesso…</div>
+        <section id="verificationPanel" class="verification-panel" aria-label="Verificação em duas etapas" hidden>
+          <div class="verification-badge"><span aria-hidden="true">✉</span> Verificação em duas etapas</div>
+          <p id="verificationDestination" class="access-help"></p>
+          <form id="verificationForm" class="access-form" method="post" action="/v1/auth/verify">
+            <div class="form-group"><label for="verificationCode">Código de 6 dígitos</label><input class="form-input verification-code" id="verificationCode" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" aria-describedby="verificationHelp" placeholder="000000" required><p id="verificationHelp" class="field-help"></p></div>
+            <button id="verifyAccount" class="btn btn-primary access-button" type="submit">Confirmar e continuar <span aria-hidden="true">→</span></button>
+          </form>
+          <div class="verification-actions"><button id="resendCode" class="btn btn-secondary" type="button">Reenviar código</button><button id="cancelVerification" class="verification-back" type="button">Usar outros dados</button></div>
+          <p class="access-help">Confira também a pasta de spam. Use o código mais recente e não o compartilhe com outras pessoas.</p>
+        </section>
+        <div id="loginPanel" role="tabpanel" aria-labelledby="loginTab">
+          <form id="loginForm" class="access-form" method="post" action="/v1/auth/login">
+            <fieldset class="account-type"><legend>Acessar como</legend><div class="account-type-options"><label><input type="radio" name="login_account_type" value="PF" checked><span>Pessoa física<small>Advogado(a)</small></span></label><label><input type="radio" name="login_account_type" value="PJ"><span>Pessoa jurídica<small>Escritório / sociedade</small></span></label></div></fieldset>
+            <div class="form-group"><label for="loginEmail">E-mail</label><input class="form-input" id="loginEmail" name="email" type="email" autocomplete="username" inputmode="email" maxlength="320" placeholder="Seu e-mail de acesso" required></div>
+            <div class="form-group"><label for="loginPassword">Senha</label><div class="password-field"><input class="form-input" id="loginPassword" name="password" type="password" autocomplete="current-password" maxlength="128" placeholder="Sua senha" required><button class="password-toggle" type="button" data-password="loginPassword" aria-label="Mostrar senha" aria-pressed="false">Mostrar</button></div></div>
+            <button id="passwordLogin" class="btn btn-primary access-button" type="submit" disabled>Entrar na minha conta <span aria-hidden="true">→</span></button>
+            <p class="access-help">Após validar sua senha, enviaremos um código para confirmar o acesso. Para pessoa jurídica, use o e-mail da sua conta vinculada ao escritório.</p>
+          </form>
+          <div id="oidcAccess" hidden><div class="access-divider"><span>ou</span></div><button id="institutionalLogin" class="btn btn-secondary access-button" type="button" disabled>Entrar com conta institucional <span aria-hidden="true">↗</span></button><p class="access-help">Use o provedor de acesso da sua organização.</p></div>
+        </div>
+        <div id="registerPanel" role="tabpanel" aria-labelledby="registerTab" hidden>
+          <p id="registrationUnavailable" class="auth-status" hidden>Novos cadastros estão fechados. Solicite acesso ao administrador.</p>
+          <form id="registerForm" class="access-form" method="post" action="/v1/auth/register">
+            <fieldset class="account-type"><legend>Tipo de cadastro</legend><div class="account-type-options"><label><input type="radio" name="register_account_type" value="PF" checked><span>Pessoa física<small>Atuação individual</small></span></label><label><input type="radio" name="register_account_type" value="PJ"><span>Pessoa jurídica<small>Escritório / sociedade</small></span></label></div></fieldset>
+            <div class="form-group"><label id="registerNameLabel" for="registerName">Nome completo</label><input class="form-input" id="registerName" name="display_name" autocomplete="name" minlength="2" maxlength="160" placeholder="Como você se chama?" required></div>
+            <div class="form-group" id="registerOrganizationGroup" hidden><label for="registerOrganization">Razão social / nome do escritório</label><input class="form-input" id="registerOrganization" name="organization_name" autocomplete="organization" minlength="2" maxlength="160" placeholder="Nome da pessoa jurídica" disabled></div>
+            <div class="form-group"><label for="registerEmail">E-mail</label><input class="form-input" id="registerEmail" name="email" type="email" autocomplete="username" inputmode="email" maxlength="320" placeholder="Seu e-mail profissional" required></div>
+            <div class="form-group"><label for="registerPassword">Crie uma senha</label><div class="password-field"><input class="form-input" id="registerPassword" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" aria-describedby="passwordHelp" placeholder="Pelo menos 12 caracteres" required><button class="password-toggle" type="button" data-password="registerPassword" aria-label="Mostrar senha" aria-pressed="false">Mostrar</button></div><p id="passwordHelp" class="field-help">Use uma frase longa e exclusiva, de 12 a 128 caracteres.</p></div>
+            <div class="form-group"><label for="registerConfirmation">Confirme a senha</label><div class="password-field"><input class="form-input" id="registerConfirmation" type="password" autocomplete="new-password" minlength="12" maxlength="128" placeholder="Digite a senha novamente" required><button class="password-toggle" type="button" data-password="registerConfirmation" aria-label="Mostrar confirmação de senha" aria-pressed="false">Mostrar</button></div></div>
+            <button id="createAccount" class="btn btn-primary access-button" type="submit" disabled>Continuar para verificação <span aria-hidden="true">→</span></button>
+            <p class="access-help" id="registrationContext">Sua conta individual será criada após confirmar o código enviado ao seu e-mail.</p>
+            <p class="access-help">Cada cadastro cria um espaço separado. Para participar de um escritório existente, solicite o vínculo ao administrador.</p>
+          </form>
+        </div>
+        <button id="authRetry" class="btn btn-secondary access-button" type="button" hidden>Tentar novamente</button>
+        <details class="access-support" id="access-help"><summary>Precisa de ajuda para acessar?</summary><p>Confira o e-mail usado no cadastro. Se sua organização usa acesso institucional, entre pelo provedor. Para recuperar o acesso ou vincular-se a uma organização existente, procure o administrador.</p></details>
+        <details id="developmentAccess" class="development-access" hidden><summary>Acesso técnico de desenvolvimento</summary><p>Disponível somente quando habilitado pelo servidor. Não substitui uma conta de usuário.</p><button id="developmentLogin" class="btn btn-secondary access-button" type="button" disabled>Entrar no ambiente local <span aria-hidden="true">→</span></button></details>
+      </div>
+    </section>
+    <section class="public-section" id="recursos" aria-labelledby="resources-heading" tabindex="-1">
+      <div class="public-section-heading"><span class="eyebrow">DO CADASTRO AO ACOMPANHAMENTO</span><h2 id="resources-heading">Mais contexto para sua rotina jurídica.</h2><p>Reúna as informações que você acompanha todos os dias e encontre o próximo passo do seu trabalho.</p></div>
+      <div class="public-feature-grid">
+        <article class="public-feature"><span class="public-feature-number" aria-hidden="true">01 / CLIENTES</span><h3>Pessoas e relações bem organizadas</h3><p>Cadastre clientes como pessoa física ou jurídica, mantenha contatos e consulte os processos associados.</p></article>
+        <article class="public-feature"><span class="public-feature-number" aria-hidden="true">02 / PROCESSOS</span><h3>Histórico para acompanhar cada caso</h3><p>Organize processos e andamentos com os dados cadastrados pela sua equipe, reunidos no mesmo espaço.</p></article>
+        <article class="public-feature"><span class="public-feature-number" aria-hidden="true">03 / PRAZOS E AGENDA</span><h3>Seus compromissos à vista</h3><p>Registre prazos, compromissos e intimações. Consulte o que precisa da sua atenção na rotina do escritório.</p></article>
+        <article class="public-feature"><span class="public-feature-number" aria-hidden="true">04 / FINANCEIRO</span><h3>Receitas e despesas com contexto</h3><p>Organize lançamentos financeiros e seus vínculos com clientes e processos. O controle registra valores; não realiza pagamentos.</p></article>
+        <article class="public-feature"><span class="public-feature-number" aria-hidden="true">05 / INVESTIGAÇÃO</span><h3>Informações para revisão humana</h3><p>Estruture investigações, entidades e achados. Consultas externas e recursos avançados dependem das integrações habilitadas.</p><span class="public-resource-note">Disponibilidade conforme configuração</span></article>
+        <article class="public-feature"><span class="public-feature-number" aria-hidden="true">06 / ARQUIVOS E RELATÓRIOS</span><h3>Documente o seu trabalho</h3><p>Inspecione arquivos no navegador e consulte as opções de relatório. Envio e preservação de evidências dependem do cofre configurado.</p><span class="public-resource-note">Disponibilidade conforme configuração</span></article>
+      </div>
+    </section>
+    <section class="public-section public-section-alt" id="como-funciona" aria-labelledby="getting-started-heading" tabindex="-1">
+      <div class="public-section-heading"><span class="eyebrow">UM COMEÇO CLARO</span><h2 id="getting-started-heading">Da sua identificação ao seu espaço de trabalho.</h2><p>Escolha o perfil que representa sua atuação. O acesso é feito com as credenciais da pessoa responsável pela conta.</p></div>
+      <div class="public-account-grid">
+        <article class="public-account-card"><span class="public-account-kind">PF</span><div><h3>Para quem atua individualmente</h3><p>Informe seu nome, e-mail e uma senha. Seu cadastro cria um espaço separado para organizar sua atuação.</p></div></article>
+        <article class="public-account-card"><span class="public-account-kind">PJ</span><div><h3>Para escritórios e sociedades</h3><p>Informe também a razão social ou o nome do escritório e o nome do responsável. Use o e-mail da conta vinculada à organização para entrar.</p></div></article>
+      </div>
+      <ol class="public-steps">
+        <li><span aria-hidden="true">01</span><h3>Preencha seus dados</h3><p>Escolha PF ou PJ e use um e-mail ao qual você tenha acesso.</p></li>
+        <li><span aria-hidden="true">02</span><h3>Confirme o código</h3><p>No cadastro e a cada login com senha, confirme o código enviado por e-mail. O envio precisa estar disponível no ambiente.</p></li>
+        <li><span aria-hidden="true">03</span><h3>Comece com seus dados</h3><p>Cadastre seu primeiro cliente e organize os processos e compromissos. Sua conta começa sem registros de demonstração.</p></li>
+      </ol>
+      <p class="public-section-note">Já participa de um escritório? Solicite o vínculo ao administrador. Criar outra conta abre uma organização separada.</p>
+    </section>
+    <section class="public-section commercial-shell" id="planos" aria-labelledby="plans-heading" tabindex="-1">
+      <div class="public-section-heading"><span class="eyebrow">CAPACIDADE PARA CADA ETAPA</span><h2 id="plans-heading">Conheça os planos do SEMPER-FI.</h2><p>Compare usuários, processos, espaço para evidências e créditos previstos em cada plano. Valores mensais do catálogo.</p></div>
+      <p class="commercial-note">Os planos estão disponíveis para consulta. A contratação ainda não está disponível. Criar uma conta não gera cobrança nem ativa um plano.</p>
+      <div id="publicPlans" aria-busy="true"><p role="status" class="commercial-status">Carregando planos…</p></div>
+      <section class="public-plan-summary" id="publicPlanSummary" aria-labelledby="publicPlanHeading" tabindex="-1" hidden>
+        <div><span class="eyebrow">SUA COMPARAÇÃO</span><h3 id="publicPlanHeading"></h3><p id="publicPlanDescription"></p><p class="public-section-note">Você pode seguir para o cadastro da conta. A seleção é apenas para consulta e não será uma contratação.</p></div>
+        <button class="btn btn-primary" type="button" data-access-tab="register">Ir para cadastro <span aria-hidden="true">→</span></button>
+      </section>
+      <div class="public-plan-notes"><article><h3>O que são os créditos?</h3><p>São unidades previstas no catálogo para operações específicas. Pacotes avulsos e consumo serão disponibilizados com a integração comercial.</p></article><article><h3>E as diligências externas?</h3><p>Certidões, cartórios e outros serviços externos usam valores em reais, separados dos créditos e da mensalidade. Recargas ainda não estão disponíveis.</p></article><article><h3>Precisa de mais capacidade?</h3><p>O catálogo prevê adicionais de usuários, processos e evidências, além de uma opção Corporate com condições personalizadas.</p></article></div>
+      <p class="public-section-note">Franquias descrevem a capacidade prevista dos planos. A execução de consultas, monitoramento e preservação de evidências também depende dos serviços habilitados para a organização.</p>
+    </section>
+    <section class="public-section public-section-alt" id="duvidas" aria-labelledby="faq-heading" tabindex="-1">
+      <div class="public-section-heading"><span class="eyebrow">ANTES DE COMEÇAR</span><h2 id="faq-heading">Respostas para os primeiros passos.</h2><p>Entenda o cadastro, o acesso e o que esperar do seu ambiente.</p></div>
+      <div class="public-faq">
+        <details><summary>Posso me cadastrar como pessoa física ou jurídica?</summary><p>Sim. Escolha o tipo de cadastro e informe os dados solicitados. Para pessoa jurídica, informe também o nome da organização e do responsável pelo acesso. Cada novo cadastro cria um espaço separado.</p></details>
+        <details><summary>Como funciona a confirmação por e-mail?</summary><p>Ao criar uma conta e ao entrar com senha, você recebe um código de seis dígitos no e-mail informado. Digite o código para concluir o acesso. A tela informa a validade e o intervalo para reenviar. Se o serviço de envio estiver indisponível, o acesso por senha não poderá ser concluído.</p></details>
+        <details><summary>Não recebi o código. O que faço?</summary><p>Confira a caixa de spam e o endereço informado. Aguarde o intervalo indicado para reenviar o código ou use “Usar outros dados” para corrigir o e-mail. Após a expiração, escolha “Iniciar novamente”. Persistindo o problema, procure o administrador do ambiente.</p></details>
+        <details><summary>Criar uma conta ativa um plano pago?</summary><p>Não. O cadastro cria sua identidade e seu espaço de trabalho. Os planos estão disponíveis para consulta; contratação online, pagamentos, compra de créditos e recargas ainda não estão disponíveis.</p></details>
+        <details><summary>O ambiente já vem com dados cadastrados?</summary><p>A nova organização começa sem clientes, processos ou lançamentos de demonstração. Você poderá cadastrar suas próprias informações nos módulos disponíveis.</p></details>
+        <details><summary>Todos os recursos avançados funcionam imediatamente?</summary><p>Consultas externas, monitoramento, automações e preservação de evidências dependem de serviços habilitados e da configuração da organização. Os limites do catálogo não garantem, por si só, a disponibilidade dessas integrações.</p></details>
+        <details><summary>Como entro em um escritório que já usa o sistema?</summary><p>Solicite ao administrador o vínculo com a organização existente. Cadastrar novamente o nome do escritório não cria esse vínculo automaticamente. A conta PJ é acessada por uma pessoa responsável, com credenciais próprias.</p></details>
+        <details><summary>Esqueci minha senha. Como recupero o acesso?</summary><p>Procure o administrador do ambiente. A recuperação automática por e-mail ainda não está disponível. Se sua organização utiliza acesso institucional, siga as orientações do provedor.</p></details>
+      </div>
+    </section>
+    <section class="public-final" aria-labelledby="public-final-heading"><div><span class="eyebrow">SEU PRÓXIMO PASSO</span><h2 id="public-final-heading">Organize o que importa para o seu trabalho.</h2><p>Crie sua conta PF ou PJ, confirme seu e-mail e comece pelas informações da sua organização.</p></div><div class="public-hero-actions"><button class="btn btn-primary" type="button" data-access-tab="register">Criar minha conta <span aria-hidden="true">→</span></button><button class="btn btn-secondary" type="button" data-access-tab="login">Já tenho acesso</button></div></section>
+  </main>
+  <footer class="login-footer" aria-label="Rodapé institucional">
+    <div class="footer-brand">
+      <a class="footer-brand-link" href="#login-top"><span aria-hidden="true">Σ</span> SEMPER-FI</a>
+      <p>Central jurídica operacional</p>
+    </div>
+    <nav class="footer-nav" aria-label="Acesso e ajuda">
+      <a href="#recursos">Recursos</a>
+      <a href="#planos">Planos</a>
+      <a href="#duvidas">Dúvidas</a>
+      <button type="button" data-access-tab="login">Entrar</button>
+      <button type="button" data-access-tab="register">Criar conta</button>
+      <a href="#access-help" data-access-help>Ajuda com acesso</a>
+    </nav>
+    <a class="footer-top" href="#login-top">Voltar ao topo <span aria-hidden="true">↑</span></a>
+    <div class="footer-bottom">
+      <p>© FORSETI Technologies. Todos os direitos reservados.</p>
+      <p>Gestão jurídica com contexto, organização e responsabilidade.</p>
+    </div>
+  </footer>
+  <noscript>Ative o JavaScript para entrar ou criar uma conta no SEMPER-FI.</noscript>
+</body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "connector_id": "brasilapi",
+  "payload": {
+    "kind": "cnpj",
+    "value": "00000000000100"
+  },
+  "purpose": "Consulta publica server-side autorizada para demonstracao tecnica",
+  "legal_basis": "contrato",
+  "authorization_reference": "AUTH-DEMO-003",
+  "scope_codes": ["public_records"],
+  "risk_level": "low"
+}

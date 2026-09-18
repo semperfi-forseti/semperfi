@@ -1,0 +1,248 @@
+[
+  {
+    "id": "brasilapi_cnpj",
+    "name": "BrasilAPI — CNPJ",
+    "category": "empresarial",
+    "connectorType": "rest",
+    "enabled": true,
+    "requiresToken": false,
+    "allowedTargetTypes": [
+      "pessoa_juridica"
+    ],
+    "legalNotes": "Conveniência; validar dados decisivos em Receita Federal.",
+    "rateLimit": "60/min",
+    "cacheTtlMinutes": 60,
+    "confidenceWeight": 0.7,
+    "termsAccepted": true,
+    "lastValidatedAt": null
+  },
+  {
+    "id": "brasilapi_cep",
+    "name": "BrasilAPI — CEP",
+    "category": "territorial_cadastral",
+    "connectorType": "rest",
+    "enabled": true,
+    "requiresToken": false,
+    "allowedTargetTypes": [
+      "endereco"
+    ],
+    "legalNotes": "Dados públicos de logradouros.",
+    "rateLimit": "60/min",
+    "cacheTtlMinutes": 1440,
+    "confidenceWeight": 0.9,
+    "termsAccepted": true,
+    "lastValidatedAt": null
+  },
+  {
+    "id": "brasilapi_ddd",
+    "name": "BrasilAPI — DDD",
+    "category": "territorial_cadastral",
+    "connectorType": "rest",
+    "enabled": true,
+    "requiresToken": false,
+    "allowedTargetTypes": [
+      "telefone"
+    ],
+    "legalNotes": "Apenas contexto territorial.",
+    "rateLimit": "60/min",
+    "cacheTtlMinutes": 10080,
+    "confidenceWeight": 0.9,
+    "termsAccepted": true,
+    "lastValidatedAt": null
+  },
+  {
+    "id": "brasilapi_bancos",
+    "name": "BrasilAPI — Bancos",
+    "category": "empresarial",
+    "connectorType": "rest",
+    "enabled": true,
+    "requiresToken": false,
+    "allowedTargetTypes": [
+      "banco"
+    ],
+    "legalNotes": "Cadastro COMPE.",
+    "rateLimit": "60/min",
+    "cacheTtlMinutes": 10080,
+    "confidenceWeight": 0.95,
+    "termsAccepted": true,
+    "lastValidatedAt": null
+  },
+  {
+    "id": "receita_federal_cnpj",
+    "name": "Receita Federal — CNPJ aberto",
+    "category": "empresarial",
+    "connectorType": "backend",
+    "enabled": false,
+    "requiresToken": false,
+    "allowedTargetTypes": [
+      "pessoa_juridica"
+    ],
+    "legalNotes": "Fonte primária oficial; requer importação backend.",
+    "rateLimit": "backend",
+    "cacheTtlMinutes": 1440,
+    "confidenceWeight": 1,
+    "termsAccepted": true,
+    "lastValidatedAt": null
+  },
+  {
+    "id": "transparencia_ceis",
+    "name": "Portal Transparência — CEIS",
+    "category": "integridade_publica",
+    "connectorType": "backend",
+    "enabled": false,
+    "requiresToken": true,
+    "allowedTargetTypes": [
+      "pessoa_fisica",
+      "pessoa_juridica"
+    ],
+    "legalNotes": "Cadastro de Empresas Inidôneas e Suspensas. Token obrigatório no backend.",
+    "rateLimit": "90/min",
+    "cacheTtlMinutes": 720,
+    "confidenceWeight": 0.95,
+    "termsAccepted": false,
+    "lastValidatedAt": null
+  },
+  {
+    "id": "transparencia_cnep",
+    "name": "Portal Transparência — CNEP",
+    "category": "integridade_publica",
+    "connectorType": "backend",
+    "enabled": false,
+    "requiresToken": true,
+    "allowedTargetTypes": [
+      "pessoa_fisica",
+      "pessoa_juridica"
+    ],
+    "legalNotes": "Cadastro Nacional de Empresas Punidas.",
+    "rateLimit": "90/min",
+    "cacheTtlMinutes": 720,
+    "confidenceWeight": 0.95,
+    "termsAccepted": false,
+    "lastValidatedAt": null
+  },
+  {
+    "id": "transparencia_cepim",
+    "name": "Portal Transparência — CEPIM",
+    "category": "integridade_publica",
+    "connectorType": "backend",
+    "enabled": false,
+    "requiresToken": true,
+    "allowedTargetTypes": [
+      "pessoa_juridica"
+    ],
+    "legalNotes": "Entidades Privadas Sem Fins Lucrativos Impedidas.",
+    "rateLimit": "90/min",
+    "cacheTtlMinutes": 720,
+    "confidenceWeight": 0.95,
+    "termsAccepted": false,
+    "lastValidatedAt": null
+  },
+  {
+    "id": "datajud_cnj",
+    "name": "DataJud — metadados processuais",
+    "category": "judicial_publico",
+    "connectorType": "backend",
+    "enabled": false,
+    "requiresToken": false,
+    "allowedTargetTypes": [
+      "processo",
+      "pessoa_fisica",
+      "pessoa_juridica"
+    ],
+    "legalNotes": "Apenas metadados públicos; respeitar sigilo processual.",
+    "rateLimit": "120/min",
+    "cacheTtlMinutes": 60,
+    "confidenceWeight": 0.9,
+    "termsAccepted": false,
+    "lastValidatedAt": null
+  },
+  {
+    "id": "cvm_dados_abertos",
+    "name": "CVM — Companhias Abertas",
+    "category": "mercado_companhias_abertas",
+    "connectorType": "backend",
+    "enabled": false,
+    "requiresToken": false,
+    "allowedTargetTypes": [
+      "pessoa_juridica"
+    ],
+    "legalNotes": "Dados abertos da CVM.",
+    "rateLimit": "60/min",
+    "cacheTtlMinutes": 1440,
+    "confidenceWeight": 0.95,
+    "termsAccepted": false,
+    "lastValidatedAt": null
+  },
+  {
+    "id": "ibge_municipios",
+    "name": "IBGE — Municípios",
+    "category": "territorial_cadastral",
+    "connectorType": "rest",
+    "enabled": true,
+    "requiresToken": false,
+    "allowedTargetTypes": [
+      "endereco",
+      "municipio"
+    ],
+    "legalNotes": "Contexto territorial; nunca usar como rastreamento de pessoa.",
+    "rateLimit": "60/min",
+    "cacheTtlMinutes": 10080,
+    "confidenceWeight": 0.95,
+    "termsAccepted": true,
+    "lastValidatedAt": null
+  },
+  {
+    "id": "rdap_dns",
+    "name": "RDAP/DNS — Domínios",
+    "category": "seguranca_digital_defensiva",
+    "connectorType": "backend",
+    "enabled": false,
+    "requiresToken": false,
+    "allowedTargetTypes": [
+      "dominio"
+    ],
+    "legalNotes": "Apenas domínios próprios ou expressamente autorizados.",
+    "rateLimit": "30/min",
+    "cacheTtlMinutes": 1440,
+    "confidenceWeight": 0.85,
+    "termsAccepted": false,
+    "lastValidatedAt": null
+  },
+  {
+    "id": "captura_manual",
+    "name": "Captura manual de fonte pública",
+    "category": "prova_digital",
+    "connectorType": "manual",
+    "enabled": true,
+    "requiresToken": false,
+    "allowedTargetTypes": [
+      "pagina_web",
+      "documento"
+    ],
+    "legalNotes": "Operador anexa URL e payload.",
+    "rateLimit": "—",
+    "cacheTtlMinutes": 0,
+    "confidenceWeight": 0.6,
+    "termsAccepted": true,
+    "lastValidatedAt": null
+  },
+  {
+    "id": "upload_documento",
+    "name": "Upload manual de documento",
+    "category": "prova_digital",
+    "connectorType": "manual",
+    "enabled": true,
+    "requiresToken": false,
+    "allowedTargetTypes": [
+      "documento",
+      "imagem",
+      "video"
+    ],
+    "legalNotes": "Arquivo vai ao cofre com SHA-256.",
+    "rateLimit": "—",
+    "cacheTtlMinutes": 0,
+    "confidenceWeight": 0.7,
+    "termsAccepted": true,
+    "lastValidatedAt": null
+  }
+]

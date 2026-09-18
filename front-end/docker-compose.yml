@@ -1,0 +1,8 @@
+services:
+  semperfi-frontend:
+    build: .
+    ports:
+      - "8088:80"
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
