@@ -86,7 +86,7 @@
   }
   function focusDestination(target, section = target) {
     target.focus({preventScroll:true});
-    section.scrollIntoView({block:'start',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});
+    section.scrollIntoView({block:'start',behavior:(window.SemperfiAccessibility?.shouldReduceMotion() ?? matchMedia('(prefers-reduced-motion: reduce)').matches)?'auto':'smooth'});
   }
   function updateRegistrationType() {
     const corporate = document.querySelector('[name="register_account_type"]:checked').value === 'PJ';
@@ -217,7 +217,7 @@
     document.querySelectorAll('a[href="#login-top"]').forEach(link=>link.addEventListener('click',event=>{
       event.preventDefault();
       document.getElementById('login-top').focus({preventScroll:true});
-      window.scrollTo({top:0,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});
+      window.scrollTo({top:0,behavior:(window.SemperfiAccessibility?.shouldReduceMotion() ?? matchMedia('(prefers-reduced-motion: reduce)').matches)?'auto':'smooth'});
     }));
     document.querySelectorAll('[name="register_account_type"]').forEach(input=>input.addEventListener('change',updateRegistrationType));
     document.querySelector('[data-access-help]').addEventListener('click',event=>{

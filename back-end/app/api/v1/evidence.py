@@ -15,13 +15,15 @@ from app.evidence import evidence_service
 from app.models import Evidence, EvidenceEvent, LegalHold
 from app.policies import PolicyContext, PolicyEffect, policy_engine
 from app.security import Principal, get_current_principal, require_recent_mfa
+from app.services.agent_runs import validate_references
 from app.services.evidence_ledger import append_evidence_event
 
 router = APIRouter(tags=["Evidence and chain of custody"])
 
 
-async def _evidence(session: AsyncSession, tenant_id: uuid.UUID, evidence_id: uuid.UUID) -> Evidence:
-    item = await session.scalar(select(Evidence).where(Evidence.id == evidence_id, Evidence.tenant_id == tenant_id))
+async def _evidence(session: AsyncSession, tenant_id: uuid.UUID, evidence_id: uuid.UUID, *, lock: bool = False) -> Evidence:
+    query = select(Evidence).where(Evidence.id == evidence_id, Evidence.tenant_id == tenant_id)
+    item = await session.scalar(query.with_for_update() if lock else query)
     if not item: raise HTTPException(status_code=404, detail="Evidência não encontrada.")
     return item
 
@@ -98,6 +100,7 @@ async def upload_evidence(
 ):
     cid, decision = await _policy(session, principal, request, PolicyContext(action="evidence.upload", purpose=purpose, legal_basis=legal_basis, authorization_reference=authorization_reference, investigation_id=investigation_id, scope_codes={"proof_digital"}))
     if decision.effect == PolicyEffect.REQUIRE_APPROVAL: raise HTTPException(status_code=202, detail={"policy_code": decision.code, "reason": decision.reason, "status": "approval_required"})
+    await validate_references(session, principal.tenant_id, investigation_id, [])
     try: staged = await evidence_service.stage_upload(file)
     except (ValueError, RuntimeError) as exc: raise HTTPException(status_code=422, detail="Arquivo rejeitado pela política de ingestão.") from exc
     metadata = {**staged.metadata, "staged_path": str(staged.path)}
@@ -112,9 +115,26 @@ async def upload_evidence(
     await session.commit(); return EvidenceCreateResponse(evidence_id=item.id, status="staged", sha256=item.sha256, mime_type=item.mime_type, size_bytes=item.size_bytes)
 
 
+@router.get("/evidences/{evidence_id}/download")
+async def download_evidence(evidence_id: uuid.UUID, request: Request, session: AsyncSession = Depends(get_db), principal: Principal = Depends(require_recent_mfa)):
+    cid, _ = await _policy(session, principal, request, PolicyContext(action="evidence.download", requires_mfa=False))
+    item = await _evidence(session, principal.tenant_id, evidence_id)
+    if item.validation_status not in {"preserved", "validated"} or not item.storage_bucket or not item.storage_key or not item.storage_version_id:
+        raise HTTPException(status_code=409, detail="Evidência não possui uma versão preservada disponível.")
+    try:
+        url = evidence_service.presigned_download(item.storage_bucket, item.storage_key, item.storage_version_id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Link temporário indisponível.") from exc
+    await append_audit(session, principal, request, action="evidence.download", resource_type="evidence", resource_id=item.id, correlation_id=cid)
+    await session.commit()
+    return {"url": url, "expires_in_seconds": evidence_service.settings.s3_presign_expires_seconds}
+
+
 @router.post("/evidences/{evidence_id}/finalize")
 async def finalize_evidence(evidence_id: uuid.UUID, request: Request, session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
-    cid, _ = await _policy(session, principal, request, PolicyContext(action="evidence.finalize")); item = await _evidence(session, principal.tenant_id, evidence_id)
+    cid, _ = await _policy(session, principal, request, PolicyContext(action="evidence.finalize")); item = await _evidence(session, principal.tenant_id, evidence_id, lock=True)
+    if item.storage_bucket and item.storage_key and item.storage_version_id:
+        return {"id": item.id, "status": item.validation_status, "version_id": item.storage_version_id}
     staged_path = item.metadata_json.get("staged_path") if item.metadata_json else None
     if not staged_path: raise HTTPException(status_code=409, detail="Evidência não possui upload pendente.")
     from pathlib import Path
@@ -122,15 +142,23 @@ async def finalize_evidence(evidence_id: uuid.UUID, request: Request, session: A
     if not path.exists(): raise HTTPException(status_code=409, detail="Área temporária indisponível; reenvie o arquivo.")
     from app.evidence.service import StagedEvidence
     staged = StagedEvidence(upload_id=path.parent.name, path=path, original_filename=item.original_filename, detected_mime=item.mime_type, size_bytes=item.size_bytes, sha256=item.sha256, metadata=item.metadata_json)
-    try: stored = evidence_service.store_original(staged, str(item.tenant_id), str(item.investigation_id) if item.investigation_id else None)
+    try:
+        stored = evidence_service.store_original(staged, str(item.tenant_id), str(item.investigation_id) if item.investigation_id else None)
+        if not stored.get("bucket") or not stored.get("key") or not stored.get("version_id"):
+            raise ValueError("O cofre não retornou uma versão preservada.")
     except Exception as exc: raise HTTPException(status_code=503, detail="Cofre de evidências indisponível.") from exc
     item.storage_bucket, item.storage_key, item.storage_version_id, item.storage_etag = stored["bucket"], stored["key"], stored["version_id"], stored["etag"]
     item.retention_mode, item.retain_until, item.validation_status = evidence_service.settings.s3_object_lock_mode, stored["retain_until"], "preserved"
     metadata = dict(item.metadata_json); metadata.pop("staged_path", None); item.metadata_json = metadata
-    evidence_service.cleanup_stage(staged)
     await append_evidence_event(session, evidence_id=item.id, tenant_id=item.tenant_id, actor_id=principal.user_id, event_type="object_lock_stored", details={"bucket": item.storage_bucket, "key": item.storage_key, "version_id": item.storage_version_id, "retain_until": item.retain_until.isoformat() if item.retain_until else None})
     await append_audit(session, principal, request, action="evidence.finalize", resource_type="evidence", resource_id=item.id, correlation_id=cid, metadata_safe={"object_lock_mode": item.retention_mode})
-    await session.commit(); return {"id": item.id, "status": item.validation_status, "version_id": item.storage_version_id}
+    await session.commit()
+    # Keep the original recoverable until database and custody events are durable.
+    try:
+        evidence_service.cleanup_stage(staged)
+    except OSError:
+        pass  # A cleanup failure must not invalidate the committed preserved version.
+    return {"id": item.id, "status": item.validation_status, "version_id": item.storage_version_id}
 
 
 @router.post("/evidences/{evidence_id}/verify")
@@ -152,6 +180,8 @@ async def verify_evidence(evidence_id: uuid.UUID, request: Request, session: Asy
 async def attest_evidence(evidence_id: uuid.UUID, request: Request, session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
     cid, _ = await _policy(session, principal, request, PolicyContext(action="evidence.verify"))
     item = await _evidence(session, principal.tenant_id, evidence_id)
+    if item.validation_status not in {"preserved", "validated"} or not item.storage_bucket or not item.storage_key or not item.storage_version_id:
+        raise HTTPException(status_code=409, detail="Atestação exige uma versão preservada sem falha de integridade.")
     item.validation_status = "validated"
     await append_evidence_event(session, evidence_id=item.id, tenant_id=item.tenant_id, actor_id=principal.user_id, event_type="human_attestation", details={"reviewer_name": principal.display_name})
     await append_audit(session, principal, request, action="evidence.attest", resource_type="evidence", resource_id=item.id, correlation_id=cid, metadata_safe={"reviewer_name": principal.display_name})

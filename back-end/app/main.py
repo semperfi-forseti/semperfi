@@ -14,6 +14,7 @@ from sqlalchemy import text
 from app.api.v1 import (
     audit,
     auth_routes,
+    billing,
     engines,
     evidence,
     frontend,
@@ -125,5 +126,5 @@ async def root():
     return JSONResponse(status_code=404, content={"detail": "Frontend não encontrado. Execute npm run sync:backend no frontend."})
 
 
-for router in (auth_routes.router, legal.router, legal_extra.router, investigations.router, engines.router, evidence.router, reports.router, audit.router, frontend.router):
+for router in (auth_routes.router, legal.router, legal_extra.router, investigations.router, engines.router, evidence.router, reports.router, audit.router, frontend.router, billing.router):
     app.include_router(router, prefix=settings.api_v1_prefix)

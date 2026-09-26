@@ -4,12 +4,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="Conheça o SEMPER-FI: gestão de clientes, processos, prazos e investigações para advogados e escritórios. Compare planos e crie sua conta PF ou PJ com acesso em duas etapas.">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="dark light">
+  <script src="assets/js/accessibility.js"></script>
   <title>Entrar · SEMPER-FI</title>
   <link rel="stylesheet" href="assets/css/style.css">
   <link rel="stylesheet" href="assets/css/interface.css">
   <link rel="stylesheet" href="assets/css/commercial.css">
   <link rel="stylesheet" href="assets/css/public.css">
+  <link rel="stylesheet" href="assets/css/themes.css">
+  <link rel="stylesheet" href="assets/css/accessibility.css">
   <script src="assets/js/commercial.js" defer></script>
   <script src="assets/js/auth.js" defer></script>
   <script src="assets/js/public.js" defer></script>
@@ -21,7 +24,7 @@
     <nav class="public-nav" aria-label="Conheça o SEMPER-FI">
       <a href="#recursos">Recursos</a><a href="#como-funciona">Como começar</a><a href="#planos">Planos</a><a href="#duvidas">Dúvidas</a>
     </nav>
-    <button class="btn btn-secondary public-signin" type="button" data-access-tab="login">Entrar <span aria-hidden="true">↗</span></button>
+    <div class="a11y-toolbar" role="group" aria-label="Aparência e acesso"><button class="btn btn-secondary" type="button" data-theme-toggle><span data-theme-icon aria-hidden="true">☀</span><span data-theme-label>Modo claro</span></button><button class="btn btn-secondary" type="button" data-a11y-open aria-controls="a11yDialog" aria-haspopup="dialog" aria-expanded="false">Acessibilidade</button><button class="btn btn-secondary public-signin" type="button" data-access-tab="login">Entrar <span aria-hidden="true">↗</span></button></div>
   </header>
   <main class="login-layout" id="login-top" tabindex="-1">
     <section class="login-story" aria-labelledby="brand-heading">
@@ -147,6 +150,7 @@
       <a href="#recursos">Recursos</a>
       <a href="#planos">Planos</a>
       <a href="#duvidas">Dúvidas</a>
+      <button type="button" data-a11y-open aria-controls="a11yDialog" aria-haspopup="dialog" aria-expanded="false">Acessibilidade</button>
       <button type="button" data-access-tab="login">Entrar</button>
       <button type="button" data-access-tab="register">Criar conta</button>
       <a href="#access-help" data-access-help>Ajuda com acesso</a>

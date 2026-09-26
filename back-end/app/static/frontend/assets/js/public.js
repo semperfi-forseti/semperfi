@@ -10,14 +10,14 @@
   const formatMoney = new Intl.NumberFormat('pt-BR', {style:'currency',currency:'BRL'});
   const escape = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
   let catalog = null, loading = false, observer;
-  const motion = () => matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+  const motion = () => (window.SemperfiAccessibility?.shouldReduceMotion() ?? matchMedia('(prefers-reduced-motion: reduce)').matches) ? 'auto' : 'smooth';
   function focusSection(target) {
     target.focus({preventScroll:true});
     target.scrollIntoView({block:'start',behavior:motion()});
   }
 
   function observeSections() {
-    const height = Math.ceil(header.getBoundingClientRect().height);
+    const height = getComputedStyle(header).position === 'sticky' ? Math.ceil(header.getBoundingClientRect().height) : 0;
     document.body.style.setProperty('--public-header-height', `${height}px`);
     observer?.disconnect();
     observer = new IntersectionObserver(entries => {

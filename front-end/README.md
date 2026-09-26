@@ -1,6 +1,6 @@
 # SEMPER-FI · Frontend
 
-Central jurídica operacional da FORSETI Technologies. Interface em português, tema escuro, acentos ciano/dourado e módulos de gestão, investigação e evidências. HTML5, CSS com custom properties e JavaScript vanilla; sem framework ou compilação.
+Central jurídica operacional da FORSETI Technologies. Interface em português, temas claro/escuro, acentos ciano/dourado e módulos de gestão, investigação e evidências. HTML5, CSS com custom properties e JavaScript vanilla; sem framework ou compilação.
 
 ## Estado atual
 
@@ -8,10 +8,36 @@ Central jurídica operacional da FORSETI Technologies. Interface em português, 
 - A página pública apresenta recursos, orientações de cadastro, planos e perguntas frequentes antes do login, com navegação por seções e atalhos para os formulários.
 - Inicialização **sem clientes, processos, investigações, históricos ou saldos fictícios**. O painel aparece somente após verificar a sessão e carregar `/v1/frontend/bootstrap`.
 - Cadastros principais usam a API. Módulos avançados ainda têm integrações parciais, discriminadas abaixo.
-- **Plano & Consumo** incorpora o catálogo do arquivo de referência `semperfi.html`: cinco planos, adicionais, pacotes de créditos, opções de recarga e tabela de operações. Comparação e resumos são interativos; contratação, assinatura e carteiras continuam indisponíveis até a integração comercial.
+- **Plano & Consumo** incorpora o catálogo do arquivo de referência `semperfi.html`. O checkout mensal foi conectado ao **Asaas Sandbox**, mediante configuração do backend. Produção, adicionais, carteiras e créditos reais continuam indisponíveis.
 - O frontend salva apenas preferências visuais no `localStorage`. Senhas, tokens de provedor e registros operacionais não são persistidos nele.
 
 ## Requisitos para executar
+
+### Aparência e acessibilidade
+
+No cabeçalho, **Modo claro/escuro** alterna a aparência e **Acessibilidade** abre as preferências. Também há acesso nos modais, no login, no rodapé público e em Configurações.
+
+- Tema claro, escuro ou conforme o sistema; alto contraste em ambos.
+- Fonte em 100%, 125%, 150% ou 200%; espaçamento de leitura e links sublinhados.
+- Movimento reduzido e avisos persistentes. Falhas e alertas permanecem até serem fechados; a informação não depende de som.
+- Labels de formulários, foco visível, navegação por teclado, Escape e retorno de foco; o painel de acessibilidade pode ser aberto durante outro modal.
+- Preferências na chave local `semperfi_accessibility_v1`, sem dados da conta. A aplicação continua operável quando esse armazenamento é bloqueado.
+
+Os testes automatizados e de navegador não substituem avaliação com leitores de tela, tecnologias assistivas e usuários com deficiência. Não há alegação de conformidade WCAG integral nem tradução automática de mídia para Libras/legendas.
+
+### Módulos novos
+
+| Arquivo | Responsabilidade |
+| --- | --- |
+| `accessibility.js`, `accessibility.css`, `themes.css` | Preferências, temas, contraste, fontes, foco e movimento |
+| `legal-forms.js` | Validação nativa, envio único e compatibilidade cliente/processo |
+| `connector-jobs.js` | Enfileirar, acompanhar e retomar uma consulta sem repetir o POST |
+| `audit-view.js` | Eventos persistidos, filtros e verificação de cadeia |
+| `billing-checkout.js` | Disponibilidade, pedido e checkout Asaas Sandbox |
+| `integrations-view.js` | Transparência, agentes Ollama, arquivos e relatórios persistidos |
+| `calculators.js` | Quatro calculadoras técnicas com parâmetros fornecidos pelo operador |
+
+As calculadoras não utilizam índices aproximados de IPCA/IGP-M/SELIC, juros fixos automáticos ou tabela penal presumida. Datas excluídas, fração, fator de atualização, juros e verbas são informados explicitamente. O resultado é aritmético; não determina elegibilidade jurídica nem substitui calendário oficial ou liquidação de sentença. São cálculos locais sem gravação, portanto não precisam enviar dados ao servidor.
 
 | Requisito | Finalidade |
 | --- | --- |
@@ -125,21 +151,21 @@ Removidos: `app.js`/`style.css` duplicados na raiz e `config/frontend.config.jso
 | RF-F03 | Painel calculado a partir dos registros | Implementado; início vazio |
 | RF-F04 | Criar, consultar, editar e excluir clientes | Cadastro principal integrado a `/v1/clients`; dados complementares do perfil 360° indisponíveis para alteração |
 | RF-F05 | Manter processos e andamentos | Cadastro principal e andamentos integrados; vínculos de arquivos indisponíveis na tela de análise local |
-| RF-F06 | Manter agenda, prazos e intimações | Operações individuais integradas; criação conjunta de andamento, prazo e compromisso bloqueada |
+| RF-F06 | Manter agenda, prazos e intimações | Operações individuais e lançamento conjunto atômico integrados; repetição idêntica não duplica registros |
 | RF-F07 | Manter receitas e despesas jurídicas | Integrado; não efetua pagamentos |
 | RF-F08 | Buscar registros e mascarar documentos | Implementado; mascaramento visual não substitui autorização |
 | RF-F09 | Gerir investigações, entidades e achados; consultar relações | Integração parcial; checklists TACER e matriz ACH da UI são rascunhos temporários |
 | RF-F10 | Executar conectores autorizados | Parcial; depende de fonte, credenciais e filas |
-| RF-F11 | Enviar e preservar evidências | Fluxo no workspace de investigação; depende de tipos MIME autorizados, ingestão e cofre. A tela Arquivos oferece inspeção local temporária |
-| RF-F12 | Consultar/gerar relatórios | Exportações locais e API coexistem; aprovação/cofre precisam de homologação |
-| RF-F13 | Consultar auditoria | Eventos do bootstrap e eventos locais da sessão; a verificação na API cobre sua própria cadeia persistida |
+| RF-F11 | Enviar e preservar evidências | Tela Arquivos integrada a envio, listagem, finalização, hash, histórico e download; depende de ingestão/cofre. Inspeção local continua separada |
+| RF-F12 | Consultar/gerar relatórios | Exportações locais, listagem de rascunhos do servidor, aprovação e download de PDF; cofre precisa de homologação |
+| RF-F13 | Consultar auditoria | Aba consulta eventos persistidos e verificação de cadeia da organização pela API, com tratamento de MFA/permissão |
 | RF-F14 | Importar clientes/processos de JSON | Integrado a `/v1/imports/frontend-demo`; nome histórico da rota preservado |
 | RF-F15 | Exibir conta e salvar preferências | Conta somente leitura; preferências visuais locais |
 | RF-F16 | Explorar OSINT, radar, APIs e referências | Parcial; catálogo não garante execução ou disponibilidade de cada serviço |
 | RF-F17 | Calculadoras com entradas do operador | Estimativas; calendário/fórmulas exigem validação específica |
-| RF-F18 | Plano & Consumo | Catálogo, comparação de cinco planos, cálculo de adicionais e resumos de pacotes; contratação e carteiras indisponíveis |
-| RF-F19 | Transparência Pública | Catálogo; esta tela não executa consultas nem solicita token |
-| RF-F20 | Agentes IA | Ferramentas determinísticas e consultas parciais; resultados temporários, sem registro em investigação nem provedor LLM configurado |
+| RF-F18 | Plano & Consumo | Catálogo e checkout mensal Asaas Sandbox persistido; demais operações comerciais ainda sem contratação |
+| RF-F19 | Transparência Pública | Consulta CEIS/CNEP/CEPIM pelo backend, com finalidade e acompanhamento da fila; token somente no servidor |
+| RF-F20 | Agentes IA | Ollama desacoplado, entrada textual, fila, resultado persistido e revisão humana; depende de modelo instalado e worker |
 | RF-F21 | Informações antes do login | Recursos, cadastro PF/PJ, etapas de acesso, catálogo de planos e oito perguntas frequentes; sem exigir sessão |
 
 Identificadores das seções: `dashboard`, `clients`, `processes`, `agenda`, `deadlines`, `intimations`, `financial`, `billing`, `queries`, `osint`, `osinttools`, `agentes`, `societario`, `transparencia`, `apiexplorer`, `conhecimento`, `metadata`, `calculators`, `reports`, `audit`, `settings`.
@@ -156,15 +182,15 @@ Adicionais aceitam quantidades inteiras de zero a cem e mostram o subtotal mensa
 
 No painel, o catálogo é carregado apenas ao abrir a seção; na página pública, carrega junto à apresentação. Ambos oferecem estado de carregamento, tratamento de falha e nova tentativa. Uma falha nesse arquivo não impede o acesso aos demais módulos. A tabela de operações descreve os custos previstos na referência; não executa serviços nem debita créditos. Os históricos permanecem sem registros comerciais.
 
-Para ativar contratação, ainda será necessário implementar no backend o ciclo de assinatura, pedidos/pagamentos, confirmação do provedor e carteiras persistentes, com autorização no servidor. O endpoint `/v1/financial-entries` atende ao financeiro jurídico e não é usado como checkout.
+O painel **Pagamentos · Asaas Sandbox** consulta configuração, pedidos e checkout mensal por cartão em `/v1/billing`. Apenas administradores com MFA recente podem iniciar um pedido. Valores vêm do backend; repetições usam o mesmo identificador de pedido. Produção, renovação, cancelamento, adicionais e carteiras ainda exigem implementação/homologação. `/v1/financial-entries` atende ao financeiro jurídico e não é usado como checkout.
 
 ### Limites dos dados complementares
 
 - Biografia, histórico político, patrimônio, empresas, notícias e documentos do perfil 360° continuam disponíveis para consulta. As ações de alteração avisam que estão indisponíveis e não gravam nem removem registros.
-- O lançamento conjunto de intimação está bloqueado. Cadastre andamento, prazo e compromisso separadamente nas telas integradas.
-- A tela **Metadados e Arquivos** calcula hash, tamanho, tipo informado e dimensões de imagens compatíveis no navegador. Não envia arquivos, não extrai EXIF completo, não cria cadeia de custódia e não salva vínculos. Suas análises desaparecem ao recarregar.
+- O lançamento conjunto exige revisão da descrição e das datas, grava tudo em uma transação e conclui a intimação. Datas processuais não são presumidas a partir do texto.
+- A tela **Arquivos e evidências** envia originais, lista registros persistidos e permite preservar, verificar hash, consultar a custódia e baixar. A opção recolhida de inspeção temporária calcula hash/dimensões no navegador, não extrai EXIF completo nem salva vínculos; somente essas análises locais desaparecem ao recarregar.
 - As marcações TACER, hipóteses e matriz ACH são rascunhos temporários. Elas não executam nem persistem resultados dos motores TACER/SIERA existentes na API.
-- Resultados da seção **Agentes IA** ficam temporariamente na página. Registrar consultas públicas no dossiê também permanece indisponível.
+- Resultados da seção **Agentes IA** ficam registrados na API, incluindo falhas e limitações. O provider local e o modelo precisam ser configurados pelo administrador. Registrar consultas públicas no dossiê permanece indisponível.
 
 O fluxo de evidências do workspace OSINT envia conteúdo textual/JSON à API. A configuração padrão de `ALLOWED_MIME_TYPES` autoriza PDF, imagens e vídeos: texto/JSON será rejeitado enquanto essa lista não for alinhada aos formatos que a organização autorizar. A inspeção local de arquivos não substitui esse fluxo de ingestão e preservação.
 
@@ -180,7 +206,7 @@ O fluxo de evidências do workspace OSINT envia conteúdo textual/JSON à API. A
 | RNF-F06 | Segredos fora do frontend | Cookie HttpOnly e credenciais de conectores no backend |
 | RNF-F07 | Consistência da distribuição | Fonte única e sincronização verificada |
 | RNF-F08 | Manutenibilidade | Sessão/interação separadas; módulo operacional ainda deve ser dividido gradualmente |
-| RNF-F09 | Acessibilidade/contraste | Melhorias aplicadas; auditoria WCAG AA completa permanece pendente |
+| RNF-F09 | Acessibilidade/contraste | Temas claro/escuro/sistema, alto contraste, fonte até 200%, espaçamento, redução de movimento, avisos persistentes, foco/teclado; auditoria manual WCAG AA completa permanece pendente |
 | RNF-F10 | Desempenho | Sem framework/build; grandes listas precisam de paginação e teste de carga |
 | RNF-F11 | Segurança de conteúdo | Interpolações e handlers HTML legados ainda exigem revisão antes de produção |
 

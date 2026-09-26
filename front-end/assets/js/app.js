@@ -7,20 +7,8 @@
 const STORAGE_KEY = 'semperfi_db_v1';
 const SETTINGS_KEY = 'semperfi_settings_v1';
 
-// ---------- Feriados nacionais BR (fixos + móveis 2024-2030) ----------
-const HOLIDAYS = {
-  2024:['2024-01-01','2024-02-12','2024-02-13','2024-03-29','2024-04-21','2024-05-01','2024-05-30','2024-09-07','2024-10-12','2024-11-02','2024-11-15','2024-11-20','2024-12-25'],
-  2025:['2025-01-01','2025-03-03','2025-03-04','2025-04-18','2025-04-21','2025-05-01','2025-06-19','2025-09-07','2025-10-12','2025-11-02','2025-11-15','2025-11-20','2025-12-25'],
-  2026:['2026-01-01','2026-02-16','2026-02-17','2026-04-03','2026-04-21','2026-05-01','2026-06-04','2026-09-07','2026-10-12','2026-11-02','2026-11-15','2026-11-20','2026-12-25'],
-  2027:['2027-01-01','2027-02-08','2027-02-09','2027-03-26','2027-04-21','2027-05-01','2027-05-27','2027-09-07','2027-10-12','2027-11-02','2027-11-15','2027-11-20','2027-12-25'],
-  2028:['2028-01-01','2028-02-28','2028-02-29','2028-04-14','2028-04-21','2028-05-01','2028-06-15','2028-09-07','2028-10-12','2028-11-02','2028-11-15','2028-11-20','2028-12-25']
-};
-const isHoliday = d => {
-  const iso = toISO(d), y = d.getFullYear();
-  return HOLIDAYS[y]?.includes(iso);
-};
+// Calend?rio visual: dias da semana; feriados do ju?zo s?o informados nas calculadoras.
 const isWeekend = d => d.getDay()===0 || d.getDay()===6;
-const isBusinessDay = d => !isWeekend(d) && !isHoliday(d);
 
 function toISO(d){
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -32,11 +20,6 @@ function fmtMoney(v){ return new Intl.NumberFormat('pt-BR',{style:'currency',cur
 function uid(prefix='id'){ return prefix+'-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,7); }
 function daysBetween(a,b){ const ms=fromISO(b)-fromISO(a); return Math.round(ms/86400000); }
 
-function addBusinessDays(start, n){
-  const d = new Date(start); let added=0;
-  while(added<n){ d.setDate(d.getDate()+1); if(isBusinessDay(d)) added++; }
-  return d;
-}
 function addCalendarDays(start, n){
   const d = new Date(start); d.setDate(d.getDate()+n);
   return d;
@@ -49,11 +32,11 @@ function saveDB(){ /* Operational records are persisted through /v1 only. */ }
 function loadSettings(){
   try {
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
-    return {masked:saved.masked !== false,sidebarCollapsed:saved.sidebarCollapsed === true,theme:'dark'};
-  } catch (_) { return {masked:true,sidebarCollapsed:false,theme:'dark'}; }
+    return {masked:saved.masked !== false,sidebarCollapsed:saved.sidebarCollapsed === true};
+  } catch (_) { return {masked:true,sidebarCollapsed:false}; }
 }
 function saveSettings(){
-  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({masked:SETTINGS.masked,sidebarCollapsed:SETTINGS.sidebarCollapsed,theme:'dark'})); }
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({masked:SETTINGS.masked,sidebarCollapsed:SETTINGS.sidebarCollapsed})); }
   catch (_) { /* The workspace also works with browser storage disabled. */ }
 }
 
@@ -124,7 +107,7 @@ function getEvidencePayloadBytes(){
 function computeUsageSnapshot(){
   return {
     storedProcesses: (DB.processes || []).length,
-    monitoredProcesses: (DB.processes || []).filter(process => process.monitoringEnabled !== false && process.status !== 'arquivado').length,
+    monitoredProcesses: (DB.processes || []).filter(process => process.monitoringEnabled === true && process.status !== 'arquivado').length,
     evidenceBytes: (DB.files || []).reduce((sum, file) => sum + (file.size || 0), 0) + getEvidencePayloadBytes(),
     seatsUsed: Math.max((DB.subscription?.assignedUsers || []).length || 0, 1)
   };
@@ -215,6 +198,7 @@ function apiErrorMessage(err){
   if (typeof err === 'string') return err;
   if (err.detail?.reason) return err.detail.reason;
   if (typeof err.detail === 'string') return err.detail;
+  if (Array.isArray(err.detail)) return err.detail.map(item => `${(item.loc || []).filter(part => part !== 'body').join('.')}: ${item.msg || 'valor inválido'}`).join('; ');
   return err.message || 'Falha na API';
 }
 function mapApiRisk(value){ return ({baixo:'low', medio:'medium', alto:'high'})[value] || value; }
@@ -226,7 +210,7 @@ function mapApiEntityType(value){
   })[value] || value;
 }
 function mapApiDeadlineStatus(value){ return ({pendente:'pending', concluido:'completed'})[value] || value; }
-function mapApiAppointmentStatus(value){ return ({confirmado:'confirmed', pendente:'pending'})[value] || value; }
+function mapApiAppointmentStatus(value){ return ({confirmado:'confirmed', pendente:'pending', concluido:'completed', cancelado:'cancelled'})[value] || value; }
 function mapApiIntimationStatus(value){ return ({recebida:'received', triagem:'triage', associada:'associated', concluida:'concluded'})[value] || value; }
 function mapApiFinancialType(value){ return ({receita:'revenue', despesa:'expense'})[value] || value; }
 function mapFrontendClientStatus(value){ return ({active:'ativo', pending:'atencao', inactive:'inativo'})[value] || value; }
@@ -438,9 +422,24 @@ function toast(msg, type='info'){
   const t = document.createElement('div');
   t.className = 'toast '+type;
   const icon = {success:'✓', error:'✕', warning:'⚠', info:'ℹ'}[type] || 'ℹ';
-  t.innerHTML = `<span>${icon}</span><span>${escapeHTML(msg)}</span>`;
+  const label = {success:'Sucesso',error:'Erro',warning:'Atenção',info:'Informação'}[type] || 'Informação';
+  t.setAttribute('role',type === 'error' ? 'alert' : 'status');
+  t.setAttribute('aria-atomic','true');
+  t.innerHTML = `<span aria-hidden="true">${icon}</span><span class="toast-message"><strong>${label}:</strong> ${escapeHTML(msg)}</span><button class="toast-close" type="button" aria-label="Fechar aviso de ${label.toLowerCase()}">×</button>`;
   c.appendChild(t);
-  setTimeout(()=>{ t.style.opacity='0'; t.style.transform='translateX(20px)'; setTimeout(()=>t.remove(),250); }, 3500);
+  c.tabIndex = 0;
+  let timer;
+  const remove = () => {
+    clearTimeout(timer);
+    const hadFocus = t.contains(document.activeElement);
+    t.remove();
+    if (!c.children.length) c.removeAttribute('tabindex');
+    if (hadFocus) (c.querySelector('button') || document.getElementById('mainContent')).focus({preventScroll:true});
+  };
+  t.querySelector('button').addEventListener('click',remove);
+  t.addEventListener('mouseenter',()=>clearTimeout(timer));
+  t.addEventListener('focusin',()=>clearTimeout(timer));
+  if (!['error','warning'].includes(type) && !window.SemperfiAccessibility?.getPreferences().keepNotices) timer = setTimeout(remove,12000);
 }
 
 // ---------- Notifications (derivadas do estado) ----------
@@ -486,7 +485,7 @@ function renderNotifications(){
   document.getElementById('notifBadge').textContent = list.length;
   document.getElementById('notifBadge').style.display = list.length ? 'flex' : 'none';
   const html = list.length
-    ? list.map(n => `<div class="notif-item" data-section="${n.section}"><div class="notif-item-title">${n.title}</div><div class="text-muted" style="font-size:11px">${n.sub}</div><div class="notif-item-time">${n.time}</div></div>`).join('')
+    ? list.map(n => `<div class="notif-item" data-section="${n.section}"><div class="notif-item-title">${escapeHTML(n.title)}</div><div class="text-muted" style="font-size:11px">${escapeHTML(n.sub)}</div><div class="notif-item-time">${escapeHTML(n.time)}</div></div>`).join('')
     : '<div class="empty-state" style="padding:32px"><div>Sem notificações</div></div>';
   document.getElementById('notifList').innerHTML = html;
   document.querySelectorAll('#notifList .notif-item').forEach(el=>{
@@ -600,7 +599,7 @@ function renderSection(id){
   }
   else { wrapper.innerHTML = `<h1 class="page-title">${id}</h1><p>Seção em desenvolvimento.</p>`; }
   renderTopbarMeters();
-  document.querySelector('.content-area').scrollTo({top:0,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});
+  document.querySelector('.content-area').scrollTo({top:0,behavior:(window.SemperfiAccessibility?.shouldReduceMotion() ?? matchMedia('(prefers-reduced-motion: reduce)').matches)?'instant':'smooth'});
   document.dispatchEvent(new Event('semperfi:render'));
 }
 
@@ -612,13 +611,14 @@ function openModal({title, body, footer, wide=false, onMount}){
   const c = document.getElementById('modalContent');
   c.className = 'modal-content' + (wide?' wide':'');
   c.innerHTML = `
-    <div class="modal-header"><h2 class="modal-title">${title}</h2><button class="modal-close" id="modalCloseBtn">×</button></div>
+    <div class="modal-header"><h2 class="modal-title">${title}</h2><div class="modal-heading-tools"><button class="btn btn-secondary" type="button" data-a11y-open aria-controls="a11yDialog" aria-haspopup="dialog" aria-expanded="false">Acessibilidade</button><button class="modal-close" id="modalCloseBtn" aria-label="Fechar janela">×</button></div></div>
     <div class="modal-body">${body}</div>
     ${footer ? `<div class="modal-footer">${footer}</div>` : ''}
   `;
   document.getElementById('modal').classList.add('active');
   document.getElementById('modalCloseBtn').onclick = closeModal;
   if (onMount) onMount(c);
+  window.SemperfiLegalForms?.enhance(c, {processes:DB.processes});
 }
 function closeModal(){ document.getElementById('modal').classList.remove('active'); }
 document.getElementById('modal').addEventListener('click', e => { if (e.target.id==='modal') closeModal(); });
@@ -685,7 +685,7 @@ SECTION_RENDERERS.dashboard = () => {
           ${urgentActions.length ? urgentActions.slice(0,5).map(a=>`
             <div style="padding:12px;background:var(--obsidian);border-radius:6px;margin-bottom:8px;border-left:3px solid var(--${a.color})">
               <div style="color:var(--${a.color});font-weight:600;margin-bottom:4px">${a.label}</div>
-              <div class="text-muted">${a.text}</div>
+              <div class="text-muted">${escapeHTML(a.text)}</div>
             </div>`).join('') : '<div class="empty-state" style="padding:24px"><div>✓ Nada urgente</div></div>'}
         </div>
       </div>
@@ -702,7 +702,7 @@ SECTION_RENDERERS.dashboard = () => {
             const proc = dbGet('processes', d.processId);
             const diff = daysBetween(today,d.date);
             const lbl = diff===0?'Hoje':diff===1?'Amanhã':diff<0?`Vencido (${-diff}d)`:fmtDate(d.date);
-            return `<div class="timeline-item"><div class="timeline-date">${lbl}</div><div class="timeline-content">${d.title} — ${proc?.number||'—'}</div></div>`;
+            return `<div class="timeline-item"><div class="timeline-date">${lbl}</div><div class="timeline-content">${escapeHTML(d.title)} — ${escapeHTML(proc?.number||'—')}</div></div>`;
           }).join('') : '<div class="text-muted">Nenhum prazo pendente</div>'}
         </div>
       </div>
@@ -742,8 +742,7 @@ function renderMiniCalendar(container){
     const classes = ['calendar-date'];
     if (iso===today) classes.push('today');
     if (eventsByDate[iso]) classes.push('has-event');
-    if (isHoliday(dateObj)) classes.push('holiday');
-    else if (isWeekend(dateObj)) classes.push('weekend');
+    if (isWeekend(dateObj)) classes.push('weekend');
     cells += `<div class="${classes.join(' ')}" data-date="${iso}" title="${eventsByDate[iso]?eventsByDate[iso].length+' evento(s)':''}">${d}</div>`;
   }
   container.innerHTML = `
@@ -770,9 +769,9 @@ function showDayDetail(iso){
   const deads = DB.deadlines.filter(d=>d.date===iso);
   let body = `<div class="detail-row"><span class="detail-label">Data:</span><span class="detail-value">${fmtDate(iso)}</span></div>`;
   body += `<h4 style="margin:16px 0 8px;color:var(--teal-accent)">Compromissos (${appts.length})</h4>`;
-  body += appts.length ? appts.map(a=>`<div style="padding:8px;background:var(--obsidian);border-radius:4px;margin-bottom:6px"><strong>${a.time}</strong> — ${a.title}<br><small class="text-muted">${a.location||''}</small></div>`).join('') : '<div class="text-muted">Nenhum</div>';
+  body += appts.length ? appts.map(a=>`<div style="padding:8px;background:var(--obsidian);border-radius:4px;margin-bottom:6px"><strong>${escapeHTML(a.time)}</strong> — ${escapeHTML(a.title)}<br><small class="text-muted">${escapeHTML(a.location||'')}</small></div>`).join('') : '<div class="text-muted">Nenhum</div>';
   body += `<h4 style="margin:16px 0 8px;color:var(--gold-accent)">Prazos (${deads.length})</h4>`;
-  body += deads.length ? deads.map(d=>{const p=dbGet('processes',d.processId);return `<div style="padding:8px;background:var(--obsidian);border-radius:4px;margin-bottom:6px">${d.title}<br><small class="text-muted">${p?.number||'—'}</small></div>`;}).join('') : '<div class="text-muted">Nenhum</div>';
+  body += deads.length ? deads.map(d=>{const p=dbGet('processes',d.processId);return `<div style="padding:8px;background:var(--obsidian);border-radius:4px;margin-bottom:6px">${escapeHTML(d.title)}<br><small class="text-muted">${escapeHTML(p?.number||'—')}</small></div>`;}).join('') : '<div class="text-muted">Nenhum</div>';
   openModal({ title:'Detalhes do dia', body, footer:'<button class="btn btn-secondary" onclick="closeModal()">Fechar</button>' });
 }
 
@@ -796,7 +795,7 @@ SECTION_RENDERERS.clients = () => {
     <p class="page-subtitle">${DB.clients.length} cadastrados | ${filtered.length} exibidos</p>
     <div class="panel">
       <div class="filter-bar">
-        <input type="text" class="form-input grow" id="cliSearch" placeholder="Buscar por nome, documento, e-mail..." value="${clientsState.search}">
+        <input type="text" class="form-input grow" id="cliSearch" placeholder="Buscar por nome, documento, e-mail..." value="${escapeHTML(clientsState.search)}">
         <select class="form-select" id="cliType"><option value="todos">Tipo: Todos</option><option value="PF" ${clientsState.type==='PF'?'selected':''}>Pessoa Física</option><option value="PJ" ${clientsState.type==='PJ'?'selected':''}>Pessoa Jurídica</option></select>
         <select class="form-select" id="cliStatus"><option value="todos">Status: Todos</option><option value="ativo" ${clientsState.status==='ativo'?'selected':''}>Ativo</option><option value="atencao" ${clientsState.status==='atencao'?'selected':''}>Atenção</option><option value="inativo" ${clientsState.status==='inativo'?'selected':''}>Inativo</option></select>
         <button class="btn btn-primary" onclick="openClientForm()">+ Novo cliente</button>
@@ -808,10 +807,10 @@ SECTION_RENDERERS.clients = () => {
             const statusMap = {ativo:'active',atencao:'pending',inativo:'critical'};
             const statusLbl = {ativo:'Ativo',atencao:'Atenção',inativo:'Inativo'};
             return `<tr>
-              <td style="font-weight:600;cursor:pointer" onclick="showClientDetail('${c.id}')">${c.name}</td>
+              <td style="font-weight:600;cursor:pointer" onclick="showClientDetail('${c.id}')">${escapeHTML(c.name)}</td>
               <td>${c.type==='PF'?'Pessoa Física':'Pessoa Jurídica'}</td>
               <td class="masked">${maskDoc(c.document)}</td>
-              <td>${c.responsible||'—'}</td>
+              <td>${escapeHTML(c.responsible||'—')}</td>
               <td>${procs}</td>
               <td><span class="status-chip ${statusMap[c.status]||'active'}">${statusLbl[c.status]||c.status}</span></td>
               <td><div class="row-actions">
@@ -911,7 +910,7 @@ SECTION_RENDERERS.processes = () => {
     <p class="page-subtitle">${DB.processes.length} cadastrados | ${filtered.length} exibidos</p>
     <div class="panel">
       <div class="filter-bar">
-        <input type="text" class="form-input grow" id="proSearch" placeholder="Número do processo ou palavra-chave..." value="${procState.search}">
+        <input type="text" class="form-input grow" id="proSearch" placeholder="Número do processo ou palavra-chave..." value="${escapeHTML(procState.search)}">
         <select class="form-select" id="proArea"><option value="todas">Área: Todas</option><option value="Civel">Cível</option><option value="Penal">Penal</option><option value="Trabalhista">Trabalhista</option><option value="Comercial">Comercial</option><option value="Administrativo">Administrativo</option></select>
         <select class="form-select" id="proStatus"><option value="todos">Status: Todos</option><option value="ativo">Ativo</option><option value="critico">Crítico</option><option value="arquivado">Arquivado</option></select>
         <button class="btn btn-primary" onclick="openProcessForm()">+ Novo processo</button>
@@ -923,12 +922,12 @@ SECTION_RENDERERS.processes = () => {
             const nextDl = DB.deadlines.filter(d=>d.processId===p.id&&d.status==='pendente').sort((a,b)=>a.date.localeCompare(b.date))[0];
             const phaseMap = {ativa:'active',critica:'critical',sentenciada:'completed',arquivada:'pending'};
             return `<tr>
-              <td style="font-weight:600;font-family:'JetBrains Mono';cursor:pointer" onclick="showProcessDetail('${p.id}')">${p.number}</td>
-              <td>${cli?.name||'—'}</td>
-              <td>${p.court}</td>
-              <td>${p.area}</td>
-              <td><span class="status-chip ${phaseMap[p.phase]||'active'}">${p.phase}</span></td>
-              <td>${p.responsible}</td>
+              <td style="font-weight:600;font-family:'JetBrains Mono';cursor:pointer" onclick="showProcessDetail('${p.id}')">${escapeHTML(p.number)}</td>
+              <td>${escapeHTML(cli?.name||'—')}</td>
+              <td>${escapeHTML(p.court)}</td>
+              <td>${escapeHTML(p.area)}</td>
+              <td><span class="status-chip ${phaseMap[p.phase]||'active'}">${escapeHTML(p.phase)}</span></td>
+              <td>${escapeHTML(p.responsible)}</td>
               <td>${nextDl?fmtDate(nextDl.date):'—'}</td>
               <td><div class="row-actions">
                 <button class="btn btn-small btn-secondary" onclick="showProcessDetail('${p.id}')">Abrir</button>
@@ -949,25 +948,25 @@ SECTION_AFTER.processes = () => {
 
 function openProcessForm(id){
   const p = id ? dbGet('processes', id) : {area:'Civel',phase:'ativa',status:'ativo'};
-  const cliOpts = DB.clients.map(c=>`<option value="${c.id}" ${c.id===p.clientId?'selected':''}>${c.name}</option>`).join('');
+  const cliOpts = DB.clients.map(c=>`<option value="${c.id}" ${c.id===p.clientId?'selected':''}>${escapeHTML(c.name)}</option>`).join('');
   openModal({ title: id?'Editar processo':'Novo processo', body:`
     <div class="form-row">
-      <div class="form-group"><label class="form-label">Número *</label><input class="form-input" id="f_number" value="${p.number||''}" placeholder="0000000-00.0000.0.00.0000"></div>
+      <div class="form-group"><label class="form-label">Número *</label><input class="form-input" id="f_number" value="${escapeHTML(p.number||'')}" placeholder="0000000-00.0000.0.00.0000"></div>
       <div class="form-group"><label class="form-label">Cliente *</label><select class="form-select" id="f_clientId"><option value="">— selecionar —</option>${cliOpts}</select></div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">Tribunal</label><input class="form-input" id="f_court" value="${p.court||''}"></div>
+      <div class="form-group"><label class="form-label">Tribunal</label><input class="form-input" id="f_court" value="${escapeHTML(p.court||'')}"></div>
       <div class="form-group"><label class="form-label">Área</label><select class="form-select" id="f_area"><option ${p.area==='Civel'?'selected':''}>Civel</option><option ${p.area==='Penal'?'selected':''}>Penal</option><option ${p.area==='Trabalhista'?'selected':''}>Trabalhista</option><option ${p.area==='Comercial'?'selected':''}>Comercial</option><option ${p.area==='Administrativo'?'selected':''}>Administrativo</option></select></div>
     </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">Fase</label><select class="form-select" id="f_phase"><option value="ativa" ${p.phase==='ativa'?'selected':''}>Ativa</option><option value="critica" ${p.phase==='critica'?'selected':''}>Crítica</option><option value="sentenciada" ${p.phase==='sentenciada'?'selected':''}>Sentenciada</option><option value="arquivada" ${p.phase==='arquivada'?'selected':''}>Arquivada</option></select></div>
-      <div class="form-group"><label class="form-label">Responsável</label><input class="form-input" id="f_responsible" value="${p.responsible||''}"></div>
+      <div class="form-group"><label class="form-label">Responsável</label><input class="form-input" id="f_responsible" value="${escapeHTML(p.responsible||'')}"></div>
     </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">Valor da causa</label><input class="form-input" id="f_value" type="number" step="0.01" value="${p.value||0}"></div>
       <div class="form-group"><label class="form-label">Status</label><select class="form-select" id="f_status"><option value="ativo" ${p.status==='ativo'?'selected':''}>Ativo</option><option value="critico" ${p.status==='critico'?'selected':''}>Crítico</option><option value="arquivado" ${p.status==='arquivado'?'selected':''}>Arquivado</option></select></div>
     </div>
-    <div class="form-group"><label class="form-label">Observações</label><textarea class="form-textarea" id="f_notes">${p.notes||''}</textarea></div>
+    <div class="form-group"><label class="form-label">Observações</label><textarea class="form-textarea" id="f_notes">${escapeHTML(p.notes||'')}</textarea></div>
   `, footer:`<button class="btn btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" onclick="saveProcess('${id||''}')">Salvar</button>` });
 }
 async function saveProcess(id){
@@ -1018,27 +1017,27 @@ SECTION_RENDERERS.processes = () => {
     <p class="page-subtitle">${DB.processes.length} cadastrados | ${filtered.length} exibidos</p>
     <div class="panel">
       <div class="filter-bar">
-        <input type="text" class="form-input grow" id="proSearch" placeholder="Número do processo ou palavra-chave..." value="${procState.search}">
+        <input type="text" class="form-input grow" id="proSearch" placeholder="Número do processo ou palavra-chave..." value="${escapeHTML(procState.search)}">
         <select class="form-select" id="proArea"><option value="todas">Área: Todas</option><option value="Civel">Cível</option><option value="Penal">Penal</option><option value="Trabalhista">Trabalhista</option><option value="Comercial">Comercial</option><option value="Administrativo">Administrativo</option></select>
         <select class="form-select" id="proStatus"><option value="todos">Status: Todos</option><option value="ativo">Ativo</option><option value="critico">Crítico</option><option value="arquivado">Arquivado</option></select>
         <button class="btn btn-primary" onclick="openProcessForm()">+ Novo processo</button>
       </div>
-      <div class="pricing-note">O monitoramento utiliza verificações automáticas, atualizações de andamentos e alertas. Processos arquivados podem permanecer armazenados sem monitoramento ativo.</div>
+      <div class="pricing-note">O cadastro e os andamentos manuais ficam salvos. O monitoramento automático depende da integração e da rotina de coleta do tribunal.</div>
       ${filtered.length?`
         <table><thead><tr><th>Número</th><th>Cliente</th><th>Tribunal</th><th>Área</th><th>Fase</th><th>Monitoramento</th><th>Responsável</th><th>Próximo Prazo</th><th></th></tr></thead><tbody>
           ${filtered.map(p=>{
             const cli = dbGet('clients', p.clientId);
             const nextDl = DB.deadlines.filter(d=>d.processId===p.id&&d.status==='pendente').sort((a,b)=>a.date.localeCompare(b.date))[0];
             const phaseMap = {ativa:'active',critica:'critical',sentenciada:'completed',arquivada:'pending'};
-            const monitoringActive = p.monitoringEnabled !== false && p.status !== 'arquivado';
+            const monitoringActive = p.monitoringEnabled === true && p.status !== 'arquivado';
             return `<tr>
-              <td style="font-weight:600;font-family:'JetBrains Mono';cursor:pointer" onclick="showProcessDetail('${p.id}')">${p.number}</td>
-              <td>${cli?.name||'—'}</td>
-              <td>${p.court}</td>
-              <td>${p.area}</td>
-              <td><span class="status-chip ${phaseMap[p.phase]||'active'}">${p.phase}</span></td>
+              <td style="font-weight:600;font-family:'JetBrains Mono';cursor:pointer" onclick="showProcessDetail('${p.id}')">${escapeHTML(p.number)}</td>
+              <td>${escapeHTML(cli?.name||'—')}</td>
+              <td>${escapeHTML(p.court)}</td>
+              <td>${escapeHTML(p.area)}</td>
+              <td><span class="status-chip ${phaseMap[p.phase]||'active'}">${escapeHTML(p.phase)}</span></td>
               <td><span class="status-chip ${monitoringActive ? 'completed' : 'pending'}">${monitoringActive ? 'Ativo' : 'Desligado'}</span></td>
-              <td>${p.responsible}</td>
+              <td>${escapeHTML(p.responsible)}</td>
               <td>${nextDl?fmtDate(nextDl.date):'—'}</td>
               <td><div class="row-actions">
                 <button class="btn btn-small btn-secondary" onclick="showProcessDetail('${p.id}')">Abrir</button>
@@ -1058,30 +1057,30 @@ SECTION_AFTER.processes = () => {
 };
 openProcessForm = function(id){
   const p = id ? dbGet('processes', id) : {area:'Civel',phase:'ativa',status:'ativo', monitoringEnabled:true};
-  const cliOpts = DB.clients.map(c=>`<option value="${c.id}" ${c.id===p.clientId?'selected':''}>${c.name}</option>`).join('');
-  const monitoringChecked = p.status === 'arquivado' ? '' : (p.monitoringEnabled !== false ? 'checked' : '');
+  const cliOpts = DB.clients.map(c=>`<option value="${c.id}" ${c.id===p.clientId?'selected':''}>${escapeHTML(c.name)}</option>`).join('');
+  const monitoringChecked = '';
   openModal({ title: id?'Editar processo':'Novo processo', body:`
     <div class="form-row">
-      <div class="form-group"><label class="form-label">Número *</label><input class="form-input" id="f_number" value="${p.number||''}" placeholder="0000000-00.0000.0.00.0000"></div>
+      <div class="form-group"><label class="form-label">Número *</label><input class="form-input" id="f_number" value="${escapeHTML(p.number||'')}" placeholder="0000000-00.0000.0.00.0000"></div>
       <div class="form-group"><label class="form-label">Cliente *</label><select class="form-select" id="f_clientId"><option value="">— selecionar —</option>${cliOpts}</select></div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">Tribunal</label><input class="form-input" id="f_court" value="${p.court||''}"></div>
+      <div class="form-group"><label class="form-label">Tribunal</label><input class="form-input" id="f_court" value="${escapeHTML(p.court||'')}"></div>
       <div class="form-group"><label class="form-label">Área</label><select class="form-select" id="f_area"><option ${p.area==='Civel'?'selected':''}>Civel</option><option ${p.area==='Penal'?'selected':''}>Penal</option><option ${p.area==='Trabalhista'?'selected':''}>Trabalhista</option><option ${p.area==='Comercial'?'selected':''}>Comercial</option><option ${p.area==='Administrativo'?'selected':''}>Administrativo</option></select></div>
     </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">Fase</label><select class="form-select" id="f_phase"><option value="ativa" ${p.phase==='ativa'?'selected':''}>Ativa</option><option value="critica" ${p.phase==='critica'?'selected':''}>Crítica</option><option value="sentenciada" ${p.phase==='sentenciada'?'selected':''}>Sentenciada</option><option value="arquivada" ${p.phase==='arquivada'?'selected':''}>Arquivada</option></select></div>
-      <div class="form-group"><label class="form-label">Responsável</label><input class="form-input" id="f_responsible" value="${p.responsible||''}"></div>
+      <div class="form-group"><label class="form-label">Responsável</label><input class="form-input" id="f_responsible" value="${escapeHTML(p.responsible||'')}"></div>
     </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">Valor da causa</label><input class="form-input" id="f_value" type="number" step="0.01" value="${p.value||0}"></div>
       <div class="form-group"><label class="form-label">Status</label><select class="form-select" id="f_status"><option value="ativo" ${p.status==='ativo'?'selected':''}>Ativo</option><option value="critico" ${p.status==='critico'?'selected':''}>Crítico</option><option value="arquivado" ${p.status==='arquivado'?'selected':''}>Arquivado</option></select></div>
     </div>
     <div class="form-group">
-      <label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input type="checkbox" id="f_monitoringEnabled" ${monitoringChecked}> Ativar monitoramento processual</label>
-      <div class="pricing-note">O monitoramento utiliza verificações automáticas, atualizações de andamentos e alertas. Processos arquivados podem permanecer armazenados sem monitoramento ativo.</div>
+      <label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input type="checkbox" id="f_monitoringEnabled" disabled ${monitoringChecked}> Monitoramento automático ainda não configurado</label>
+      <div class="pricing-note">O cadastro e os andamentos manuais ficam salvos. O monitoramento automático depende da integração e da rotina de coleta do tribunal.</div>
     </div>
-    <div class="form-group"><label class="form-label">Observações</label><textarea class="form-textarea" id="f_notes">${p.notes||''}</textarea></div>
+    <div class="form-group"><label class="form-label">Observações</label><textarea class="form-textarea" id="f_notes">${escapeHTML(p.notes||'')}</textarea></div>
   `, footer:`<button class="btn btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" onclick="saveProcess('${id||''}')">Salvar</button>` });
 };
 saveProcess = async function(id){
@@ -1161,7 +1160,7 @@ SECTION_RENDERERS.deadlines = () => {
           <option value="hoje" ${dlState.filter==='hoje'?'selected':''}>Hoje</option><option value="semana" ${dlState.filter==='semana'?'selected':''}>Esta semana</option>
           <option value="vencido" ${dlState.filter==='vencido'?'selected':''}>Vencido</option><option value="concluido" ${dlState.filter==='concluido'?'selected':''}>Concluído</option>
         </select>
-        <input type="text" class="form-input grow" id="dlSearch" placeholder="Filtrar..." value="${dlState.search}">
+        <input type="text" class="form-input grow" id="dlSearch" placeholder="Filtrar..." value="${escapeHTML(dlState.search)}">
         <button class="btn btn-primary" onclick="openDeadlineForm()">+ Novo prazo</button>
       </div>
       ${filtered.length?`
@@ -1177,10 +1176,10 @@ SECTION_RENDERERS.deadlines = () => {
             else if (diff<=2){ chip='pending'; diffColor='var(--warning)'; }
             else if (diff<=7){ chip='pending'; }
             return `<tr>
-              <td>${d.title}</td><td style="font-family:'JetBrains Mono';font-size:12px">${proc?.number||'—'}</td>
-              <td>${cli?.name||'—'}</td><td>${fmtDate(d.date)}</td>
+              <td>${escapeHTML(d.title)}</td><td style="font-family:'JetBrains Mono';font-size:12px">${escapeHTML(proc?.number||'—')}</td>
+              <td>${escapeHTML(cli?.name||'—')}</td><td>${fmtDate(d.date)}</td>
               <td style="font-weight:700;color:${diffColor}">${diffLbl}</td>
-              <td>${d.responsible||'—'}</td><td><span class="status-chip ${chip}">${d.status}</span></td>
+              <td>${escapeHTML(d.responsible||'—')}</td><td><span class="status-chip ${chip}">${escapeHTML(d.status)}</span></td>
               <td><div class="row-actions">
                 ${d.status==='pendente'?`<button class="btn btn-small btn-primary" onclick="completeDeadline('${d.id}')">Concluir</button>`:''}
                 <button class="btn btn-small btn-secondary" onclick="openDeadlineForm('${d.id}')">Editar</button>
@@ -1200,19 +1199,19 @@ SECTION_AFTER.deadlines = () => {
 
 function openDeadlineForm(id){
   const d = id ? dbGet('deadlines', id) : {status:'pendente', type:'manifestacao', date:toISO(new Date())};
-  const procOpts = DB.processes.map(p=>`<option value="${p.id}" ${p.id===d.processId?'selected':''}>${p.number}</option>`).join('');
+  const procOpts = DB.processes.map(p=>`<option value="${p.id}" ${p.id===d.processId?'selected':''}>${escapeHTML(p.number)}</option>`).join('');
   openModal({ title:id?'Editar prazo':'Novo prazo', body:`
-    <div class="form-group"><label class="form-label">Título *</label><input class="form-input" id="f_title" value="${d.title||''}" placeholder="Ex: Manifestação sobre laudo"></div>
+    <div class="form-group"><label class="form-label">Título *</label><input class="form-input" id="f_title" value="${escapeHTML(d.title||'')}" placeholder="Ex: Manifestação sobre laudo"></div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">Processo *</label><select class="form-select" id="f_processId">${procOpts}</select></div>
       <div class="form-group"><label class="form-label">Tipo</label><select class="form-select" id="f_type"><option value="manifestacao" ${d.type==='manifestacao'?'selected':''}>Manifestação</option><option value="recurso" ${d.type==='recurso'?'selected':''}>Recurso</option><option value="peticao" ${d.type==='peticao'?'selected':''}>Petição</option><option value="audiencia" ${d.type==='audiencia'?'selected':''}>Audiência</option><option value="contestacao" ${d.type==='contestacao'?'selected':''}>Contestação</option></select></div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">Data *</label><input class="form-input" id="f_date" type="date" value="${d.date}"></div>
-      <div class="form-group"><label class="form-label">Responsável</label><input class="form-input" id="f_responsible" value="${d.responsible||''}"></div>
+      <div class="form-group"><label class="form-label">Data *</label><input class="form-input" id="f_date" type="date" value="${escapeHTML(d.date)}"></div>
+      <div class="form-group"><label class="form-label">Responsável</label><input class="form-input" id="f_responsible" value="${escapeHTML(d.responsible||'')}"></div>
     </div>
     <div class="form-group"><label class="form-label">Status</label><select class="form-select" id="f_status"><option value="pendente" ${d.status==='pendente'?'selected':''}>Pendente</option><option value="concluido" ${d.status==='concluido'?'selected':''}>Concluído</option></select></div>
-    <div class="form-group"><label class="form-label">Notas</label><textarea class="form-textarea" id="f_notes">${d.notes||''}</textarea></div>
+    <div class="form-group"><label class="form-label">Notas</label><textarea class="form-textarea" id="f_notes">${escapeHTML(d.notes||'')}</textarea></div>
   `, footer:`<button class="btn btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" onclick="saveDeadline('${id||''}')">Salvar</button>` });
 }
 async function saveDeadline(id){
@@ -1277,7 +1276,7 @@ SECTION_RENDERERS.agenda = () => {
           <div class="pill ${agState.view==='mes'?'active':''}" data-view="mes">Mês</div>
           <div class="pill ${agState.view==='lista'?'active':''}" data-view="lista">Lista</div>
         </div>
-        <input type="date" class="form-input" id="agDate" value="${agState.date}">
+        <input type="date" class="form-input" id="agDate" value="${escapeHTML(agState.date)}">
         <button class="btn btn-primary" onclick="openAppointmentForm()">+ Novo compromisso</button>
       </div>
       <div id="agView"></div>
@@ -1306,12 +1305,12 @@ function renderAgendaDay(iso){
       const cli = dbGet('clients',a.clientId);
       const colorMap = {reuniao:'teal-accent', audiencia:'gold-accent', prazo:'warning', atendimento:'info'};
       return `<div style="padding:12px;background:var(--obsidian);border-radius:6px;margin-bottom:8px;border-left:3px solid var(--${colorMap[a.type]||'teal-accent'});cursor:pointer" onclick="openAppointmentForm('${a.id}')">
-        <div style="font-weight:600">${a.time||''} — ${a.title}</div>
-        <div class="text-muted" style="font-size:12px;margin-top:4px">${cli?.name||''} ${cli&&a.location?'|':''} ${a.location||''}</div>
-        ${a.notes?`<div class="text-muted" style="font-size:11px;margin-top:4px">${a.notes}</div>`:''}
+        <div style="font-weight:600">${escapeHTML(a.time||'')} — ${escapeHTML(a.title)}</div>
+        <div class="text-muted" style="font-size:12px;margin-top:4px">${escapeHTML(cli?.name||'')} ${cli&&a.location?'|':''} ${escapeHTML(a.location||'')}</div>
+        ${a.notes?`<div class="text-muted" style="font-size:11px;margin-top:4px">${escapeHTML(a.notes)}</div>`:''}
       </div>`;
     }).join(''):'<div class="text-muted">Nenhum compromisso</div>'}
-    ${deads.length?`<h4 style="margin:16px 0 8px;color:var(--gold-accent)">Prazos no dia</h4>${deads.map(d=>{const p=dbGet('processes',d.processId);return `<div style="padding:8px;background:var(--obsidian);border-radius:4px;margin-bottom:4px">⏰ ${d.title} — ${p?.number||''}</div>`;}).join('')}`:''}`;
+    ${deads.length?`<h4 style="margin:16px 0 8px;color:var(--gold-accent)">Prazos no dia</h4>${deads.map(d=>{const p=dbGet('processes',d.processId);return `<div style="padding:8px;background:var(--obsidian);border-radius:4px;margin-bottom:4px">⏰ ${escapeHTML(d.title)} — ${escapeHTML(p?.number||'')}</div>`;}).join('')}`:''}`;
 }
 function renderAgendaWeek(iso){
   const d = fromISO(iso);
@@ -1324,8 +1323,8 @@ function renderAgendaWeek(iso){
     const dayDeads = DB.deadlines.filter(x=>x.date===dayISO);
     html += `<div style="background:var(--obsidian);border-radius:6px;padding:8px;min-height:120px">
       <div style="font-weight:700;font-size:12px;margin-bottom:6px;color:${dayISO===toISO(new Date())?'var(--teal-accent)':'var(--text-primary)'}">${['Dom','Seg','Ter','Qua','Qui','Sex','Sab'][day.getDay()]} ${day.getDate()}</div>
-      ${dayAppts.map(a=>`<div style="font-size:10px;padding:3px 5px;background:var(--obsidian-lighter);border-radius:3px;margin-bottom:3px;cursor:pointer" onclick="openAppointmentForm('${a.id}')">${a.time} ${a.title.slice(0,18)}</div>`).join('')}
-      ${dayDeads.map(d=>`<div style="font-size:10px;padding:3px 5px;background:rgba(212,169,116,.2);border-radius:3px;margin-bottom:3px">⏰ ${d.title.slice(0,18)}</div>`).join('')}
+      ${dayAppts.map(a=>`<div style="font-size:10px;padding:3px 5px;background:var(--obsidian-lighter);border-radius:3px;margin-bottom:3px;cursor:pointer" onclick="openAppointmentForm('${a.id}')">${escapeHTML(a.time)} ${escapeHTML(a.title.slice(0,18))}</div>`).join('')}
+      ${dayDeads.map(d=>`<div style="font-size:10px;padding:3px 5px;background:rgba(212,169,116,.2);border-radius:3px;margin-bottom:3px">⏰ ${escapeHTML(d.title.slice(0,18))}</div>`).join('')}
     </div>`;
   }
   return html+'</div>';
@@ -1343,20 +1342,20 @@ function renderAgendaList(){
     ${all.map(e=>{
       const cli = e._kind==='apt'?dbGet('clients',e.clientId):null;
       const proc = dbGet('processes', e.processId);
-      return `<tr><td>${fmtDate(e.date)}</td><td>${e.time||'—'}</td><td>${e._kind==='apt'?e.type:'prazo'}</td><td>${e.title}</td><td>${cli?.name||proc?.number||'—'}</td><td><span class="status-chip ${e.status==='concluido'?'completed':'pending'}">${e.status}</span></td></tr>`;
+      return `<tr><td>${fmtDate(e.date)}</td><td>${escapeHTML(e.time||'—')}</td><td>${e._kind==='apt'?e.type:'prazo'}</td><td>${escapeHTML(e.title)}</td><td>${escapeHTML(cli?.name||proc?.number||'—')}</td><td><span class="status-chip ${e.status==='concluido'?'completed':'pending'}">${escapeHTML(e.status)}</span></td></tr>`;
     }).join('')}
   </tbody></table>`;
 }
 
 function openAppointmentForm(id){
   const a = id?dbGet('appointments',id):{status:'confirmado',type:'reuniao',date:toISO(new Date()),time:'09:00'};
-  const cliOpts = DB.clients.map(c=>`<option value="${c.id}" ${c.id===a.clientId?'selected':''}>${c.name}</option>`).join('');
-  const procOpts = DB.processes.map(p=>`<option value="${p.id}" ${p.id===a.processId?'selected':''}>${p.number}</option>`).join('');
+  const cliOpts = DB.clients.map(c=>`<option value="${c.id}" ${c.id===a.clientId?'selected':''}>${escapeHTML(c.name)}</option>`).join('');
+  const procOpts = DB.processes.map(p=>`<option value="${p.id}" ${p.id===a.processId?'selected':''}>${escapeHTML(p.number)}</option>`).join('');
   openModal({ title:id?'Editar compromisso':'Novo compromisso', body:`
-    <div class="form-group"><label class="form-label">Título *</label><input class="form-input" id="f_title" value="${a.title||''}"></div>
+    <div class="form-group"><label class="form-label">Título *</label><input class="form-input" id="f_title" value="${escapeHTML(a.title||'')}"></div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">Data *</label><input class="form-input" id="f_date" type="date" value="${a.date}"></div>
-      <div class="form-group"><label class="form-label">Hora</label><input class="form-input" id="f_time" type="time" value="${a.time||''}"></div>
+      <div class="form-group"><label class="form-label">Data *</label><input class="form-input" id="f_date" type="date" value="${escapeHTML(a.date)}"></div>
+      <div class="form-group"><label class="form-label">Hora</label><input class="form-input" id="f_time" type="time" value="${escapeHTML(a.time||'')}"></div>
     </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">Tipo</label><select class="form-select" id="f_type"><option value="reuniao" ${a.type==='reuniao'?'selected':''}>Reunião</option><option value="audiencia" ${a.type==='audiencia'?'selected':''}>Audiência</option><option value="prazo" ${a.type==='prazo'?'selected':''}>Prazo</option><option value="atendimento" ${a.type==='atendimento'?'selected':''}>Atendimento</option></select></div>
@@ -1366,8 +1365,8 @@ function openAppointmentForm(id){
       <div class="form-group"><label class="form-label">Cliente</label><select class="form-select" id="f_clientId"><option value="">—</option>${cliOpts}</select></div>
       <div class="form-group"><label class="form-label">Processo</label><select class="form-select" id="f_processId"><option value="">—</option>${procOpts}</select></div>
     </div>
-    <div class="form-group"><label class="form-label">Local</label><input class="form-input" id="f_location" value="${a.location||''}"></div>
-    <div class="form-group"><label class="form-label">Notas</label><textarea class="form-textarea" id="f_notes">${a.notes||''}</textarea></div>
+    <div class="form-group"><label class="form-label">Local</label><input class="form-input" id="f_location" value="${escapeHTML(a.location||'')}"></div>
+    <div class="form-group"><label class="form-label">Notas</label><textarea class="form-textarea" id="f_notes">${escapeHTML(a.notes||'')}</textarea></div>
   `, footer:`<button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>${id?`<button class="btn btn-danger" onclick="deleteAppointment('${id}')">Excluir</button>`:''}<button class="btn btn-primary" onclick="saveAppointment('${id||''}')">Salvar</button>` });
 }
 async function saveAppointment(id){
@@ -1441,9 +1440,9 @@ function renderIntimationsTab(){
       const p = dbGet('processes', i.processId);
       return `<tr>
         <td style="font-family:'JetBrains Mono';font-size:11px">${i.id}</td>
-        <td>${i.source}</td><td>${i.type}</td><td>${fmtDateTime(i.receivedAt)}</td>
-        <td style="font-family:'JetBrains Mono';font-size:11px">${p?.number||'—'}</td>
-        <td><span class="status-chip ${i.confidence==='alta'?'active':'pending'}">${i.confidence}</span></td>
+        <td>${escapeHTML(i.source)}</td><td>${escapeHTML(i.type)}</td><td>${fmtDateTime(i.receivedAt)}</td>
+        <td style="font-family:'JetBrains Mono';font-size:11px">${escapeHTML(p?.number||'—')}</td>
+        <td><span class="status-chip ${i.confidence==='alta'?'active':'pending'}">${escapeHTML(i.confidence)}</span></td>
         <td><div class="row-actions">
           <button class="btn btn-small btn-secondary" onclick="showIntimationDetail('${i.id}')">Revisar</button>
           ${!i.processId?`<button class="btn btn-small btn-primary" onclick="openIntimationForm('${i.id}')">Associar</button>`:''}
@@ -1459,19 +1458,19 @@ function showIntimationDetail(id){
   const i = dbGet('intimations', id);
   const p = dbGet('processes', i.processId);
   openModal({ title:`Intimação ${i.id}`, body:`
-    <div class="detail-row"><span class="detail-label">Fonte:</span><span class="detail-value">${i.source}</span></div>
-    <div class="detail-row"><span class="detail-label">Tipo:</span><span class="detail-value">${i.type}</span></div>
+    <div class="detail-row"><span class="detail-label">Fonte:</span><span class="detail-value">${escapeHTML(i.source)}</span></div>
+    <div class="detail-row"><span class="detail-label">Tipo:</span><span class="detail-value">${escapeHTML(i.type)}</span></div>
     <div class="detail-row"><span class="detail-label">Recebido:</span><span class="detail-value">${fmtDateTime(i.receivedAt)}</span></div>
-    <div class="detail-row"><span class="detail-label">Processo:</span><span class="detail-value">${p?.number||'(não associada)'}</span></div>
-    <div class="detail-row"><span class="detail-label">Confiança:</span><span class="detail-value">${i.confidence}</span></div>
-    <div class="detail-row"><span class="detail-label">Status:</span><span class="detail-value">${i.status}</span></div>
+    <div class="detail-row"><span class="detail-label">Processo:</span><span class="detail-value">${escapeHTML(p?.number||'(não associada)')}</span></div>
+    <div class="detail-row"><span class="detail-label">Confiança:</span><span class="detail-value">${escapeHTML(i.confidence)}</span></div>
+    <div class="detail-row"><span class="detail-label">Status:</span><span class="detail-value">${escapeHTML(i.status)}</span></div>
     <h4 style="margin:16px 0 6px">Conteúdo</h4>
-    <div style="padding:12px;background:var(--obsidian);border-radius:6px">${i.content}</div>
+    <div style="padding:12px;background:var(--obsidian);border-radius:6px">${escapeHTML(i.content)}</div>
   `, footer:`<button class="btn btn-secondary" onclick="closeModal()">Fechar</button><button class="btn btn-primary" onclick="closeModal();openIntimationForm('${id}')">Editar</button>` });
 }
 function openIntimationForm(id){
   const i = id?dbGet('intimations',id):{source:'Manual',type:'intimacao',confidence:'media',status:'triagem',receivedAt:Date.now()};
-  const procOpts = DB.processes.map(p=>`<option value="${p.id}" ${p.id===i.processId?'selected':''}>${p.number}</option>`).join('');
+  const procOpts = DB.processes.map(p=>`<option value="${p.id}" ${p.id===i.processId?'selected':''}>${escapeHTML(p.number)}</option>`).join('');
   openModal({ title:id?'Editar intimação':'Nova intimação', body:`
     <div class="form-row">
       <div class="form-group"><label class="form-label">Fonte</label><select class="form-select" id="f_source"><option ${i.source==='DJe SP'?'selected':''}>DJe SP</option><option ${i.source==='API CNJ'?'selected':''}>API CNJ</option><option ${i.source==='Manual'?'selected':''}>Manual</option><option ${i.source==='E-mail'?'selected':''}>E-mail</option></select></div>
@@ -1481,7 +1480,8 @@ function openIntimationForm(id){
       <div class="form-group"><label class="form-label">Processo</label><select class="form-select" id="f_processId"><option value="">— não associar —</option>${procOpts}</select></div>
       <div class="form-group"><label class="form-label">Status</label><select class="form-select" id="f_status"><option value="recebida" ${i.status==='recebida'?'selected':''}>Recebida</option><option value="triagem" ${i.status==='triagem'?'selected':''}>Triagem</option><option value="associada" ${i.status==='associada'?'selected':''}>Associada</option><option value="concluida" ${i.status==='concluida'?'selected':''}>Concluída</option></select></div>
     </div>
-    <div class="form-group"><label class="form-label">Conteúdo</label><textarea class="form-textarea" id="f_content" style="min-height:120px">${i.content||''}</textarea></div>
+    <div class="form-row"><div class="form-group"><label class="form-label" for="f_receivedAt">Recebido em *</label><input class="form-input" id="f_receivedAt" type="datetime-local" value="${toLocalISO(new Date(i.receivedAt)).slice(0,16)}"></div><div class="form-group"><label class="form-label" for="f_confidence">Confiança atribuída na revisão</label><select class="form-select" id="f_confidence"><option value="baixa" ${i.confidence==='baixa'?'selected':''}>Baixa</option><option value="media" ${i.confidence==='media'?'selected':''}>Média</option><option value="alta" ${i.confidence==='alta'?'selected':''}>Alta</option></select></div></div>
+    <div class="form-group"><label class="form-label">Conteúdo *</label><textarea class="form-textarea" id="f_content" style="min-height:120px">${escapeHTML(i.content||'')}</textarea></div>
   `, footer:`<button class="btn btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" onclick="saveIntimation('${id||''}')">Salvar</button>` });
 }
 async function saveIntimation(id){
@@ -1491,9 +1491,9 @@ async function saveIntimation(id){
     type:document.getElementById('f_type').value,
     processId: pid,
     status: pid ? (document.getElementById('f_status').value==='triagem'?'associada':document.getElementById('f_status').value) : document.getElementById('f_status').value,
-    confidence:'alta',
+    confidence:document.getElementById('f_confidence').value,
     content:document.getElementById('f_content').value.trim(),
-    receivedAt: id?dbGet('intimations',id).receivedAt:Date.now()
+    receivedAt:new Date(document.getElementById('f_receivedAt').value).toISOString()
   };
   if (!data.content){ toast('Conteúdo obrigatório','error'); return; }
   try {
@@ -1573,7 +1573,7 @@ SECTION_RENDERERS.financial = () => {
         <table style="font-size:12px"><thead><tr><th>Cliente</th><th>Valor</th><th>Vencimento</th><th>Status</th></tr></thead><tbody>
           ${DB.financial.filter(f=>f.type==='receita'&&(f.status==='previsto'||f.status==='vencido')).sort((a,b)=>a.date.localeCompare(b.date)).map(f=>{
             const cli = dbGet('clients', f.clientId);
-            return `<tr><td>${cli?.name||'—'}</td><td style="font-weight:700">${fmtMoney(f.amount)}</td><td>${fmtDate(f.date)}</td><td><span class="status-chip ${f.status==='vencido'?'critical':'active'}">${f.status}</span></td></tr>`;
+            return `<tr><td>${escapeHTML(cli?.name||'—')}</td><td style="font-weight:700">${fmtMoney(f.amount)}</td><td>${fmtDate(f.date)}</td><td><span class="status-chip ${f.status==='vencido'?'critical':'active'}">${escapeHTML(f.status)}</span></td></tr>`;
           }).join('')}
         </tbody></table>
       </div>
@@ -1587,10 +1587,10 @@ SECTION_RENDERERS.financial = () => {
       <table><thead><tr><th>Data</th><th>Tipo</th><th>Descrição</th><th>Cliente</th><th>Categoria</th><th>Valor</th><th>Status</th><th></th></tr></thead><tbody>
         ${filtered.map(f=>{const cli=dbGet('clients',f.clientId);return `<tr>
           <td>${fmtDate(f.date)}</td>
-          <td><span class="badge ${f.type==='receita'?'badge-primary':'badge-warning'}">${f.type}</span></td>
-          <td>${f.description}</td><td>${cli?.name||'—'}</td><td>${f.category||'—'}</td>
+          <td><span class="badge ${f.type==='receita'?'badge-primary':'badge-warning'}">${escapeHTML(f.type)}</span></td>
+          <td>${escapeHTML(f.description)}</td><td>${escapeHTML(cli?.name||'—')}</td><td>${f.category||'—'}</td>
           <td style="font-weight:700;color:${f.type==='receita'?'var(--success)':'var(--danger)'}">${fmtMoney(f.amount)}</td>
-          <td><span class="status-chip ${f.status==='recebido'||f.status==='pago'?'active':f.status==='vencido'?'critical':'pending'}">${f.status}</span></td>
+          <td><span class="status-chip ${f.status==='recebido'||f.status==='pago'?'active':f.status==='vencido'?'critical':'pending'}">${escapeHTML(f.status)}</span></td>
           <td><div class="row-actions"><button class="btn btn-small btn-secondary" onclick="openFinancialForm('${f.id}')">Editar</button><button class="btn btn-small btn-danger" onclick="deleteFinancial('${f.id}')">×</button></div></td>
         </tr>`;}).join('')}
       </tbody></table>
@@ -1603,18 +1603,18 @@ SECTION_AFTER.financial = () => {
 };
 function openFinancialForm(id){
   const f = id?dbGet('financial',id):{type:'receita',status:'previsto',category:'honorarios',date:toISO(new Date())};
-  const cliOpts = DB.clients.map(c=>`<option value="${c.id}" ${c.id===f.clientId?'selected':''}>${c.name}</option>`).join('');
-  const procOpts = DB.processes.map(p=>`<option value="${p.id}" ${p.id===f.processId?'selected':''}>${p.number}</option>`).join('');
+  const cliOpts = DB.clients.map(c=>`<option value="${c.id}" ${c.id===f.clientId?'selected':''}>${escapeHTML(c.name)}</option>`).join('');
+  const procOpts = DB.processes.map(p=>`<option value="${p.id}" ${p.id===f.processId?'selected':''}>${escapeHTML(p.number)}</option>`).join('');
   openModal({ title:id?'Editar lançamento':'Novo lançamento', body:`
     <div class="form-row">
       <div class="form-group"><label class="form-label">Tipo</label><select class="form-select" id="f_type"><option value="receita" ${f.type==='receita'?'selected':''}>Receita</option><option value="despesa" ${f.type==='despesa'?'selected':''}>Despesa</option></select></div>
-      <div class="form-group"><label class="form-label">Data *</label><input class="form-input" id="f_date" type="date" value="${f.date}"></div>
+      <div class="form-group"><label class="form-label">Data *</label><input class="form-input" id="f_date" type="date" value="${escapeHTML(f.date)}"></div>
     </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">Valor (R$) *</label><input class="form-input" id="f_amount" type="number" step="0.01" value="${f.amount||0}"></div>
       <div class="form-group"><label class="form-label">Status</label><select class="form-select" id="f_status"><option value="previsto" ${f.status==='previsto'?'selected':''}>Previsto</option><option value="recebido" ${f.status==='recebido'?'selected':''}>Recebido</option><option value="pago" ${f.status==='pago'?'selected':''}>Pago</option><option value="vencido" ${f.status==='vencido'?'selected':''}>Vencido</option></select></div>
     </div>
-    <div class="form-group"><label class="form-label">Descrição *</label><input class="form-input" id="f_description" value="${f.description||''}"></div>
+    <div class="form-group"><label class="form-label">Descrição *</label><input class="form-input" id="f_description" value="${escapeHTML(f.description||'')}"></div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">Cliente</label><select class="form-select" id="f_clientId"><option value="">—</option>${cliOpts}</select></div>
       <div class="form-group"><label class="form-label">Processo</label><select class="form-select" id="f_processId"><option value="">—</option>${procOpts}</select></div>
@@ -1744,11 +1744,12 @@ SECTION_RENDERERS.queries = () => `
   </div>
 `;
 SECTION_AFTER.queries = () => {
-  document.querySelectorAll('.pill[data-kind]').forEach(p=>p.onclick=()=>{queryState.kind=p.dataset.kind;queryState.result=null;renderSection('queries');});
+  document.querySelectorAll('.pill[data-kind]').forEach(p=>p.onclick=()=>{if(queryState.loading)return;queryState.runId=null;queryState.kind=p.dataset.kind;queryState.result=null;renderSection('queries');});
   renderQueryForm();
 };
 function renderQueryForm(){
   const formEl = document.getElementById('queryForm');
+  if (!formEl) return;
   const inputs = {
     cnpj: {label:'CNPJ', placeholder:'00.000.000/0001-00', help:'Apenas números ou formato com pontuação'},
     cep: {label:'CEP', placeholder:'00000-000', help:'Endereço completo'},
@@ -1758,91 +1759,82 @@ function renderQueryForm(){
   };
   const i = inputs[queryState.kind];
   formEl.innerHTML = `
-    <div class="form-group"><label class="form-label">${i.label}</label><input class="form-input" id="queryInput" placeholder="${i.placeholder}"><div class="text-muted" style="font-size:11px;margin-top:4px">${i.help}</div></div>
-    <div class="form-group"><label class="form-label">Finalidade</label><input class="form-input" id="queryPurpose" placeholder="Ex: due diligence de cliente, validação de processo"></div>
-    <div class="form-group"><label style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="queryConsent"> Declaro possuir finalidade legítima e autorização quando necessária.</label></div>
-    <button class="btn btn-primary" id="btnQuery">${queryState.loading?'<span class="spinner"></span> Consultando...':'Consultar'}</button>
+    <div class="form-group"><label class="form-label">${i.label}</label><input class="form-input" id="queryInput" value="${escapeHTML(queryState.value || '')}" placeholder="${i.placeholder}"><div class="text-muted" style="font-size:11px;margin-top:4px">${i.help}</div></div>
+    <div class="form-group"><label class="form-label">Finalidade</label><input class="form-input" id="queryPurpose" value="${escapeHTML(queryState.purpose || '')}" placeholder="Ex: due diligence de cliente, validação de processo"></div>
+    <div class="form-group"><label style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="queryConsent" ${queryState.consent ? 'checked' : ''}> Declaro possuir finalidade legítima e autorização quando necessária.</label></div>
+    <button class="btn btn-primary" id="btnQuery" ${queryState.loading ? 'disabled' : ''}>${queryState.loading?'<span class="spinner"></span> Consultando...':'Consultar'}</button>
   `;
-  document.getElementById('btnQuery').onclick = doQuery;
+  document.getElementById('btnQuery').onclick = () => doQuery(false);
+  if (queryState.runId && !queryState.loading) {
+    const resume = document.createElement('button'); resume.className = 'btn btn-secondary';
+    resume.type = 'button'; resume.textContent = 'Acompanhar execução existente';
+    resume.onclick = () => doQuery(true); formEl.append(resume);
+  }
   const r = document.getElementById('queryResult');
   if (queryState.result) r.innerHTML = renderQueryResult();
 }
-async function doQuery(){
+async function doQuery(resume=false){
+  if (queryState.loading) return;
   const val = document.getElementById('queryInput').value.trim();
   const purpose = document.getElementById('queryPurpose').value.trim();
   const consent = document.getElementById('queryConsent').checked;
-  if (!val){ toast('Informe o valor para consulta','error'); return; }
-  if (!consent){ toast('Marque a declaração de finalidade legítima','error'); return; }
-  if (!purpose){ toast('Descreva a finalidade da consulta','error'); return; }
-  queryState.loading = true; document.getElementById('btnQuery').innerHTML = '<span class="spinner"></span> Consultando...';
+  if (!resume && !val){ toast('Informe o valor para consulta','error'); return; }
+  if (!resume && !consent){ toast('Marque a declaração de finalidade legítima','error'); return; }
+  if (!resume && purpose.length < 10){ toast('Descreva a finalidade com pelo menos 10 caracteres.','error'); return; }
+  const kind = queryState.kind;
+  const kindMap = {cnpj:'cnpj',cep:'cep',banco:'bank',ddd:'ddd',feriados:'holidays'};
+  queryState.value=val; queryState.purpose=purpose; queryState.consent=consent;
+  queryState.loading=true;
+  const button=document.getElementById('btnQuery'); button.disabled=true;
+  const options={onProgress(event){
+    if(event.runId) queryState.runId=event.runId;
+    const current=document.getElementById('btnQuery');
+    if(current) current.textContent=event.status==='queued' ? 'Na fila de processamento…' : 'Consultando…';
+  }};
   try {
-    let data;
-    if (isBackendMode()){
-      const kindMap = { cnpj:'cnpj', cep:'cep', banco:'bank', ddd:'ddd', feriados:'holidays' };
-      const res = await backendApi('/osint/runs?wait=true', {
-        method:'POST',
-        body: JSON.stringify({
-          connector_id:'brasilapi',
-          payload:{ kind: kindMap[queryState.kind], value: val.replace(/\D/g,'') },
-          purpose,
-          legal_basis:'legitimo_interesse',
-          authorization_reference:'Consulta iniciada pela interface SEMPER-FI',
-          scope_codes:[queryState.kind === 'cnpj' || queryState.kind === 'banco' ? 'empresarial' : 'territorial_cadastral'],
-          risk_level:'low'
-        })
-      });
-      data = res.raw_snapshot || res.normalized_result || {};
-    } else {
-      let url;
-      switch(queryState.kind){
-        case 'cnpj': url = `https://brasilapi.com.br/api/cnpj/v1/${val.replace(/\D/g,'')}`; break;
-        case 'cep': url = `https://brasilapi.com.br/api/cep/v2/${val.replace(/\D/g,'')}`; break;
-        case 'banco': url = `https://brasilapi.com.br/api/banks/v1/${val.replace(/\D/g,'')}`; break;
-        case 'ddd': url = `https://brasilapi.com.br/api/ddd/v1/${val.replace(/\D/g,'')}`; break;
-        case 'feriados': url = `https://brasilapi.com.br/api/feriados/v1/${val.replace(/\D/g,'')}`; break;
-      }
-      const r = await fetch(url);
-      if (!r.ok) throw new Error('HTTP '+r.status);
-      data = await r.json();
-    }
-    queryState.result = { ok:true, data, at: Date.now(), purpose };
-    audit('queries','consulta',`${queryState.kind}:${val}`,'sucesso');
+    const result = resume
+      ? await window.SemperfiConnectorJobs.resume(backendApi,queryState.runId,options)
+      : await window.SemperfiConnectorJobs.run(backendApi,{
+          connector_id:'brasilapi',payload:{kind:kindMap[kind],value:val.replace(/\D/g,'')},purpose,
+          legal_basis:'legitimo_interesse',authorization_reference:'Consulta autorizada pelo operador na interface SEMPER-FI',
+          scope_codes:[kind==='cnpj'||kind==='banco'?'empresarial':'territorial_cadastral'],risk_level:'low'
+        },options);
+    queryState.result={ok:true,data:result.raw_snapshot ?? result.normalized_result ?? {},at:Date.now(),purpose,runId:result.run_id};
+    queryState.runId=null;
     toast('Consulta concluída','success');
-  } catch(e){
-    const message = apiErrorMessage(e);
-    queryState.result = { ok:false, error: message, at: Date.now() };
-    audit('queries','consulta',`${queryState.kind}:${val}`,'erro');
-    toast('Erro na consulta: '+message,'error');
-  }
-  queryState.loading = false;
-  renderQueryForm();
+  } catch(error){
+    const resumable=['TIMEOUT','REQUEST_FAILED','ABORTED'].includes(error.code);
+    queryState.runId=resumable ? error.runId || queryState.runId : null;
+    queryState.result={ok:false,error:apiErrorMessage(error)+(queryState.runId ? ' A execução pode continuar no servidor. Use Acompanhar execução existente.' : ''),at:Date.now()};
+    toast(queryState.result.error,'error');
+  } finally { queryState.loading=false; renderQueryForm(); }
 }
 function renderQueryResult(){
   const r = queryState.result;
-  if (!r.ok) return `<div class="alert alert-danger"><span>✕</span><span>Falha: ${r.error}</span></div>`;
+  if (!r.ok) return `<div class="alert alert-danger"><span>✕</span><span>Falha: ${escapeHTML(r.error)}</span></div>`;
   if (Array.isArray(r.data)){
     return `<div class="panel"><div class="panel-title">Resultado (${r.data.length})</div>
-      <div style="max-height:400px;overflow:auto"><pre style="font-size:12px;color:var(--text-primary);white-space:pre-wrap">${JSON.stringify(r.data,null,2)}</pre></div></div>`;
+      <div style="max-height:400px;overflow:auto"><pre style="font-size:12px;color:var(--text-primary);white-space:pre-wrap">${escapeHTML(JSON.stringify(r.data,null,2))}</pre></div></div>`;
   }
-  const rows = Object.entries(r.data).filter(([k,v])=>typeof v!=='object' || v===null).map(([k,v])=>`<div class="detail-row"><span class="detail-label">${k}:</span><span class="detail-value">${v||'—'}</span></div>`).join('');
+  const rows = Object.entries(r.data).filter(([k,v])=>typeof v!=='object' || v===null).map(([k,v])=>`<div class="detail-row"><span class="detail-label">${escapeHTML(k)}:</span><span class="detail-value">${escapeHTML(v ?? '—')}</span></div>`).join('');
   return `<div class="panel"><div class="panel-title">Resultado <button class="btn btn-small btn-secondary" onclick="navigator.clipboard.writeText(JSON.stringify(queryState.result.data,null,2));toast('Copiado','success')">Copiar JSON</button></div>
     ${rows}
-    <details style="margin-top:16px"><summary style="cursor:pointer;color:var(--teal-accent)">Dados completos</summary><pre style="font-size:11px;white-space:pre-wrap;margin-top:8px">${JSON.stringify(r.data,null,2)}</pre></details>
+    <details style="margin-top:16px"><summary style="cursor:pointer;color:var(--teal-accent)">Dados completos</summary><pre style="font-size:11px;white-space:pre-wrap;margin-top:8px">${escapeHTML(JSON.stringify(r.data,null,2))}</pre></details>
   </div>`;
 }
 
 renderQueryResult = function(){
   const r = queryState.result;
-  if (!r?.ok) return `<div class="alert alert-danger"><span>✕</span><span>Falha: ${r?.error || 'Consulta inválida'}</span></div>`;
+  if (!r?.ok) return `<div class="alert alert-danger"><span>✕</span><span>Falha: ${escapeHTML(r?.error || 'Consulta inválida')}</span></div>`;
   if (Array.isArray(r.data)){
     return `<div class="panel"><div class="panel-title">Resultado (${r.data.length})</div>
-      <div style="max-height:400px;overflow:auto"><pre style="font-size:12px;color:var(--text-primary);white-space:pre-wrap">${JSON.stringify(r.data,null,2)}</pre></div>
+      <div style="max-height:400px;overflow:auto"><pre style="font-size:12px;color:var(--text-primary);white-space:pre-wrap">${escapeHTML(JSON.stringify(r.data,null,2))}</pre></div>
       <div class="billing-toolbar mt-20"><button class="btn btn-secondary" onclick="enrichPublicQueryResult()">Registrar consulta no dossiê</button></div></div>`;
   }
-  const rows = Object.entries(r.data).filter(([k,v])=>typeof v!=='object' || v===null).map(([k,v])=>`<div class="detail-row"><span class="detail-label">${k}:</span><span class="detail-value">${v||'—'}</span></div>`).join('');
+  const rows = Object.entries(r.data).filter(([k,v])=>typeof v!=='object' || v===null).map(([k,v])=>`<div class="detail-row"><span class="detail-label">${escapeHTML(k)}:</span><span class="detail-value">${escapeHTML(v ?? '—')}</span></div>`).join('');
   return `<div class="panel"><div class="panel-title">Resultado <button class="btn btn-small btn-secondary" onclick="navigator.clipboard.writeText(JSON.stringify(queryState.result.data,null,2));toast('Copiado','success')">Copiar JSON</button></div>
     ${rows}
-    <details style="margin-top:16px"><summary style="cursor:pointer;color:var(--teal-accent)">Dados completos</summary><pre style="font-size:11px;white-space:pre-wrap;margin-top:8px">${JSON.stringify(r.data,null,2)}</pre></details>
+    <details style="margin-top:16px"><summary style="cursor:pointer;color:var(--teal-accent)">Dados completos</summary><pre style="font-size:11px;white-space:pre-wrap;margin-top:8px">${escapeHTML(JSON.stringify(r.data,null,2))}</pre></details>
     <div class="billing-toolbar mt-20"><button class="btn btn-secondary" onclick="enrichPublicQueryResult()">Registrar consulta no dossiê</button></div>
   </div>`;
 };
@@ -1871,7 +1863,7 @@ SECTION_RENDERERS.metadata = () => `
     ${DB.files.length?`<table><thead><tr><th>ID</th><th>Nome</th><th>Tipo</th><th>Tamanho</th><th>Hash SHA-256</th><th>Data</th><th></th></tr></thead><tbody>
       ${DB.files.map(f=>`<tr>
         <td style="font-family:'JetBrains Mono';font-size:11px">${f.id}</td>
-        <td>${f.name}</td><td>${f.type}</td><td>${(f.size/1024/1024).toFixed(2)} MB</td>
+        <td>${escapeHTML(f.name)}</td><td>${escapeHTML(f.type)}</td><td>${(f.size/1024/1024).toFixed(2)} MB</td>
         <td class="masked" style="font-size:11px" title="${f.hash}">${maskHash(f.hash)}</td>
         <td>${fmtDateTime(f.uploadedAt)}</td>
         <td><div class="row-actions">
@@ -1914,7 +1906,7 @@ async function handleFiles(files){
   const prog = document.getElementById('uploadProgress');
   for (const file of files){
     if (file.size > 50*1024*1024){ toast(`${file.name}: arquivo > 50MB`,'error'); continue; }
-    prog.innerHTML = `<div style="padding:10px;margin-top:10px;background:var(--obsidian);border-radius:6px"><span class="spinner"></span> Processando ${file.name}...</div>`;
+    prog.innerHTML = `<div style="padding:10px;margin-top:10px;background:var(--obsidian);border-radius:6px"><span class="spinner"></span> Processando ${escapeHTML(file.name)}...</div>`;
     try {
       const buf = await file.arrayBuffer();
       const hashBuf = await crypto.subtle.digest('SHA-256', buf);
@@ -1931,11 +1923,11 @@ async function handleFiles(files){
 
 function showFileDetail(id){
   const f = dbGet('files', id);
-  const procOpts = DB.processes.map(p=>`<option value="${p.id}" ${p.id===f.processId?'selected':''}>${p.number}</option>`).join('');
+  const procOpts = DB.processes.map(p=>`<option value="${p.id}" ${p.id===f.processId?'selected':''}>${escapeHTML(p.number)}</option>`).join('');
   openModal({ wide:true, title:`Arquivo: ${f.name}`, body:`
     <div class="form-row">
       <div><div class="detail-row"><span class="detail-label">ID:</span><span class="detail-value">${f.id}</span></div>
-        <div class="detail-row"><span class="detail-label">Tipo MIME:</span><span class="detail-value">${f.type}</span></div>
+        <div class="detail-row"><span class="detail-label">Tipo MIME:</span><span class="detail-value">${escapeHTML(f.type)}</span></div>
         <div class="detail-row"><span class="detail-label">Tamanho:</span><span class="detail-value">${(f.size/1024/1024).toFixed(3)} MB</span></div>
         <div class="detail-row"><span class="detail-label">Análise:</span><span class="detail-value">${fmtDateTime(f.uploadedAt)}</span></div></div>
       <div><div class="detail-row"><span class="detail-label">Hash SHA-256:</span></div>
@@ -1977,7 +1969,7 @@ SECTION_RENDERERS.metadata = () => {
       ${DB.files.length?`<table><thead><tr><th>ID</th><th>Nome</th><th>Tipo</th><th>Tamanho</th><th>Hash SHA-256</th><th>Data</th><th></th></tr></thead><tbody>
         ${DB.files.map(f=>`<tr>
           <td style="font-family:'JetBrains Mono';font-size:11px">${f.id}</td>
-          <td>${f.name}</td><td>${f.type}</td><td>${(f.size/1024/1024).toFixed(2)} MB</td>
+          <td>${escapeHTML(f.name)}</td><td>${escapeHTML(f.type)}</td><td>${(f.size/1024/1024).toFixed(2)} MB</td>
           <td class="masked" style="font-size:11px" title="${f.hash}">${maskHash(f.hash)}</td>
           <td>${fmtDateTime(f.uploadedAt)}</td>
           <td><div class="row-actions">
@@ -2010,7 +2002,7 @@ handleFiles = async function(files){
       openUpgradePrompt('Limite de evidências atingido', 'O arquivo excede a capacidade configurada.', 'Consulte o administrador sobre a capacidade disponível antes de prosseguir.');
       break;
     }
-    prog.innerHTML = `<div style="padding:10px;margin-top:10px;background:var(--obsidian);border-radius:6px"><span class="spinner"></span> Processando ${file.name}...</div>`;
+    prog.innerHTML = `<div style="padding:10px;margin-top:10px;background:var(--obsidian);border-radius:6px"><span class="spinner"></span> Processando ${escapeHTML(file.name)}...</div>`;
     try {
       const buf = await file.arrayBuffer();
       const hashBuf = await crypto.subtle.digest('SHA-256', buf);
@@ -2029,174 +2021,8 @@ handleFiles = async function(files){
 // ============================================================
 //                        CALCULATORS
 // ============================================================
-SECTION_RENDERERS.calculators = () => `
-  <h1 class="page-title">Calculadoras</h1>
-  <p class="page-subtitle">Ferramentas de cálculo jurídico — apoio técnico (sempre validar)</p>
-  <div class="grid-2x2">
-    <div class="panel">
-      <div class="panel-title">📅 Calculadora de Prazos</div>
-      <div class="form-group"><label class="form-label">Data inicial</label><input type="date" class="form-input" id="cd_start" value="${toISO(new Date())}"></div>
-      <div class="form-group"><label class="form-label">Quantidade de dias</label><input type="number" class="form-input" id="cd_days" value="" required></div>
-      <div class="form-group"><label class="form-label">Modalidade</label><select class="form-select" id="cd_mode">
-        <option value="uteis">Dias úteis (CPC art. 219)</option>
-        <option value="corridos">Dias corridos</option>
-      </select></div>
-      <div class="form-group"><label style="font-size:12px;color:var(--text-secondary);display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="cd_skipWeekendEnd" checked> Postergar para próximo dia útil se cair em fim de semana/feriado</label></div>
-      <button class="btn btn-primary" style="width:100%" onclick="calcDeadline()">Calcular</button>
-      <div id="cd_result" class="mt-12" style="display:none"></div>
-    </div>
-    <div class="panel">
-      <div class="panel-title">⚖️ Execução Penal — Progressão</div>
-      <div class="form-group"><label class="form-label">Pena total (anos)</label><input type="number" step="0.1" class="form-input" id="ce_years" value="" required></div>
-      <div class="form-group"><label class="form-label">Tempo cumprido (anos)</label><input type="number" step="0.1" class="form-input" id="ce_done" value="" required></div>
-      <div class="form-group"><label class="form-label">Tipo do crime</label><select class="form-select" id="ce_crime">
-        <option value="comum_primario">Comum — Primário (16%)</option>
-        <option value="comum_reincidente">Comum — Reincidente (20%)</option>
-        <option value="violencia_primario">Com violência/grave ameaça — Primário (25%)</option>
-        <option value="violencia_reincidente">Com violência/grave ameaça — Reincidente (30%)</option>
-        <option value="hediondo_primario">Hediondo — Primário sem morte (40%)</option>
-        <option value="hediondo_resultado_morte">Hediondo c/ resultado morte — Primário (50%)</option>
-        <option value="hediondo_reincidente">Hediondo — Reincidente em hediondo (60%)</option>
-        <option value="hediondo_morte_reincidente">Hediondo c/ morte — Reincidente em hediondo (70%)</option>
-      </select></div>
-      <button class="btn btn-primary" style="width:100%" onclick="calcExecution()">Calcular progressão</button>
-      <div id="ce_result" class="mt-12" style="display:none"></div>
-    </div>
-    <div class="panel">
-      <div class="panel-title">💵 Atualização Monetária</div>
-      <div class="form-group"><label class="form-label">Valor original (R$)</label><input type="number" step="0.01" class="form-input" id="cm_value" value="" required></div>
-      <div class="form-group"><label class="form-label">Data inicial</label><input type="date" class="form-input" id="cm_start" value="${toISO(addCalendarDays(new Date(),-365))}"></div>
-      <div class="form-group"><label class="form-label">Data final</label><input type="date" class="form-input" id="cm_end" value="${toISO(new Date())}"></div>
-      <div class="form-group"><label class="form-label">Índice (% ao ano aproximado)</label><select class="form-select" id="cm_index">
-        <option value="4.5">IPCA (~4.5% a.a.)</option><option value="3.8">IGP-M (~3.8% a.a.)</option>
-        <option value="11.75">SELIC (~11.75% a.a.)</option><option value="custom">Personalizado</option>
-      </select></div>
-      <div class="form-group" id="cm_custom_wrap"><label class="form-label">Taxa anual (%)</label><input type="number" step="0.01" class="form-input" id="cm_custom" value="" required></div>
-      <div class="form-group"><label style="font-size:12px;color:var(--text-secondary);display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="cm_juros" checked> Aplicar juros simples 1% a.m. (após atualização)</label></div>
-      <button class="btn btn-primary" style="width:100%" onclick="calcMonetario()">Calcular</button>
-      <div id="cm_result" class="mt-12" style="display:none"></div>
-    </div>
-    <div class="panel">
-      <div class="panel-title">🧾 Verba Trabalhista (rescisão sem justa causa)</div>
-      <div class="form-group"><label class="form-label">Salário mensal (R$)</label><input type="number" step="0.01" class="form-input" id="ct_sal" value="" required></div>
-      <div class="form-group"><label class="form-label">Data de admissão</label><input type="date" class="form-input" id="ct_admissao" value="" required></div>
-      <div class="form-group"><label class="form-label">Data de rescisão</label><input type="date" class="form-input" id="ct_rescisao" value="${toISO(new Date())}"></div>
-      <div class="form-group"><label class="form-label">Aviso prévio</label><select class="form-select" id="ct_aviso"><option value="indenizado">Indenizado</option><option value="trabalhado">Trabalhado</option></select></div>
-      <button class="btn btn-primary" style="width:100%" onclick="calcTrabalho()">Calcular</button>
-      <div id="ct_result" class="mt-12" style="display:none"></div>
-    </div>
-  </div>
-  <div class="alert alert-warning mt-20"><span>⚠️</span><span><strong>Disclaimer:</strong> Cálculos são estimativas técnicas. A validação por profissional habilitado é OBRIGATÓRIA antes de uso processual.</span></div>
-`;
-SECTION_AFTER.calculators = () => {
-  document.getElementById('cm_index').onchange = e=>{ document.getElementById('cm_custom_wrap').style.display = e.target.value==='custom'?'block':'none'; };
-};
-function calcDeadline(){
-  if (!validateCalculatorInputs(["cd_start","cd_days"])) return;
-  const start = fromISO(document.getElementById('cd_start').value);
-  const days = parseInt(document.getElementById('cd_days').value)||0;
-  const mode = document.getElementById('cd_mode').value;
-  const skip = document.getElementById('cd_skipWeekendEnd').checked;
-  let end = mode==='uteis' ? addBusinessDays(start, days) : addCalendarDays(start, days);
-  let postponed = false;
-  if (skip){
-    while (!isBusinessDay(end)){ end.setDate(end.getDate()+1); postponed = true; }
-  }
-  const isoEnd = toISO(end);
-  document.getElementById('cd_result').style.display = 'block';
-  document.getElementById('cd_result').innerHTML = `
-    <div style="padding:14px;background:var(--obsidian);border-radius:6px;border-left:3px solid var(--teal-accent)">
-      <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;margin-bottom:4px">Vencimento</div>
-      <div style="font-size:20px;font-weight:700;font-family:'JetBrains Mono';color:var(--teal-accent)">${end.toLocaleDateString('pt-BR',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}</div>
-      <div style="font-size:12px;color:var(--text-secondary);margin-top:6px">${days} ${mode==='uteis'?'dias úteis':'dias corridos'} a partir de ${fmtDate(toISO(start))}${postponed?' • Postergado por fim de semana/feriado':''}</div>
-      ${isHoliday(end)?'<div style="color:var(--danger);font-size:12px;margin-top:4px">⚠ Feriado</div>':''}
-    </div>`;
-}
-function calcExecution(){
-  if (!validateCalculatorInputs(["ce_years","ce_done"])) return;
-  const totalAnos = parseFloat(document.getElementById('ce_years').value)||0;
-  const cumpridoAnos = parseFloat(document.getElementById('ce_done').value)||0;
-  const ruleset = {
-    comum_primario:{f:0.16,d:'Crime comum, primário'},
-    comum_reincidente:{f:0.20,d:'Crime comum, reincidente'},
-    violencia_primario:{f:0.25,d:'Com violência/grave ameaça, primário'},
-    violencia_reincidente:{f:0.30,d:'Com violência/grave ameaça, reincidente'},
-    hediondo_primario:{f:0.40,d:'Hediondo, primário sem morte (Lei 13.964/19)'},
-    hediondo_resultado_morte:{f:0.50,d:'Hediondo c/ resultado morte, primário'},
-    hediondo_reincidente:{f:0.60,d:'Hediondo, reincidente em hediondo'},
-    hediondo_morte_reincidente:{f:0.70,d:'Hediondo c/ morte, reincidente em hediondo'}
-  };
-  const r = ruleset[document.getElementById('ce_crime').value];
-  const totalDias = Math.round(totalAnos*365.25);
-  const cumpDias = Math.round(cumpridoAnos*365.25);
-  const necDias = Math.ceil(totalDias * r.f);
-  const falta = Math.max(0, necDias - cumpDias);
-  const dataElegivel = addCalendarDays(new Date(), falta);
-  document.getElementById('ce_result').style.display = 'block';
-  document.getElementById('ce_result').innerHTML = `
-    <div style="padding:14px;background:var(--obsidian);border-radius:6px;border-left:3px solid ${falta?'var(--warning)':'var(--success)'}">
-      <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;margin-bottom:4px">Regra aplicada</div>
-      <div style="font-size:13px;margin-bottom:8px">${r.d} (${(r.f*100).toFixed(0)}%)</div>
-      <div class="detail-row"><span class="detail-label">Necessário para progressão:</span><span class="detail-value">${necDias} dias (${(necDias/365.25).toFixed(2)} anos)</span></div>
-      <div class="detail-row"><span class="detail-label">Tempo cumprido:</span><span class="detail-value">${cumpDias} dias</span></div>
-      <div class="detail-row"><span class="detail-label">Status:</span><span class="detail-value" style="color:${falta?'var(--warning)':'var(--success)'};font-weight:700">${falta?`Faltam ${falta} dias`:'✓ ELEGÍVEL'}</span></div>
-      ${falta?`<div class="detail-row"><span class="detail-label">Data prevista de elegibilidade:</span><span class="detail-value">${fmtDate(toISO(dataElegivel))}</span></div>`:''}
-      <div style="font-size:11px;color:var(--danger);margin-top:8px">⚠ Verificar requisitos subjetivos (LEP arts. 112 e ss.) — atestado de boa conduta e demais condições.</div>
-    </div>`;
-}
-function calcMonetario(){
-  if (!validateCalculatorInputs(['cm_value','cm_start','cm_end','cm_custom'])) return;
-  const v = parseFloat(document.getElementById('cm_value').value)||0;
-  const d1 = fromISO(document.getElementById('cm_start').value);
-  const d2 = fromISO(document.getElementById('cm_end').value);
-  const idx = document.getElementById('cm_index').value;
-  const taxa = idx==='custom' ? parseFloat(document.getElementById('cm_custom').value)/100 : parseFloat(idx)/100;
-  const aplJuros = document.getElementById('cm_juros').checked;
-  const meses = (d2.getFullYear()-d1.getFullYear())*12 + (d2.getMonth()-d1.getMonth());
-  const anos = meses/12;
-  const corrigido = v * Math.pow(1+taxa, anos);
-  const juros = aplJuros ? corrigido * 0.01 * meses : 0;
-  const total = corrigido + juros;
-  document.getElementById('cm_result').style.display = 'block';
-  document.getElementById('cm_result').innerHTML = `
-    <div style="padding:14px;background:var(--obsidian);border-radius:6px;border-left:3px solid var(--gold-accent)">
-      <div class="detail-row"><span class="detail-label">Valor original:</span><span class="detail-value">${fmtMoney(v)}</span></div>
-      <div class="detail-row"><span class="detail-label">Período:</span><span class="detail-value">${meses} meses (${anos.toFixed(2)} anos)</span></div>
-      <div class="detail-row"><span class="detail-label">Atualização (${(taxa*100).toFixed(2)}% a.a.):</span><span class="detail-value">${fmtMoney(corrigido-v)}</span></div>
-      ${aplJuros?`<div class="detail-row"><span class="detail-label">Juros simples (1% a.m. × ${meses}):</span><span class="detail-value">${fmtMoney(juros)}</span></div>`:''}
-      <div class="detail-row"><span class="detail-label" style="font-weight:700">Total atualizado:</span><span class="detail-value" style="color:var(--teal-accent);font-weight:700;font-size:16px">${fmtMoney(total)}</span></div>
-    </div>`;
-}
-function calcTrabalho(){
-  if (!validateCalculatorInputs(["ct_sal","ct_admissao","ct_rescisao"])) return;
-  const sal = parseFloat(document.getElementById('ct_sal').value)||0;
-  const adm = fromISO(document.getElementById('ct_admissao').value);
-  const res = fmtISO=>fromISO(document.getElementById('ct_rescisao').value);
-  const resDate = fromISO(document.getElementById('ct_rescisao').value);
-  const aviso = document.getElementById('ct_aviso').value;
-  const meses = (resDate.getFullYear()-adm.getFullYear())*12 + (resDate.getMonth()-adm.getMonth()) + 1;
-  const anos = meses/12;
-  const saldoSal = (sal/30) * resDate.getDate();
-  const ferProporc = (sal/12) * (meses%12 || 12) * (4/3);
-  const ferVencidas = anos>=1 ? sal * (4/3) : 0;
-  const decimo = (sal/12) * (meses%12 || 12);
-  const avisoVal = aviso==='indenizado' ? sal + (sal/30)*Math.min(60, Math.floor(anos)*3) : 0;
-  const fgts = sal * meses * 0.08;
-  const multaFGTS = fgts * 0.40;
-  const total = saldoSal + ferProporc + ferVencidas + decimo + avisoVal + multaFGTS;
-  document.getElementById('ct_result').style.display = 'block';
-  document.getElementById('ct_result').innerHTML = `
-    <div style="padding:14px;background:var(--obsidian);border-radius:6px;border-left:3px solid var(--success)">
-      <div class="detail-row"><span class="detail-label">Saldo de salário:</span><span class="detail-value">${fmtMoney(saldoSal)}</span></div>
-      <div class="detail-row"><span class="detail-label">Férias vencidas + 1/3:</span><span class="detail-value">${fmtMoney(ferVencidas)}</span></div>
-      <div class="detail-row"><span class="detail-label">Férias proporcionais + 1/3:</span><span class="detail-value">${fmtMoney(ferProporc)}</span></div>
-      <div class="detail-row"><span class="detail-label">13º proporcional:</span><span class="detail-value">${fmtMoney(decimo)}</span></div>
-      <div class="detail-row"><span class="detail-label">Aviso prévio:</span><span class="detail-value">${fmtMoney(avisoVal)}</span></div>
-      <div class="detail-row"><span class="detail-label">FGTS depositado (8%×meses):</span><span class="detail-value">${fmtMoney(fgts)}</span></div>
-      <div class="detail-row"><span class="detail-label">Multa 40% sobre FGTS:</span><span class="detail-value">${fmtMoney(multaFGTS)}</span></div>
-      <div class="detail-row"><span class="detail-label" style="font-weight:700">Total estimado:</span><span class="detail-value" style="color:var(--success);font-weight:700;font-size:16px">${fmtMoney(total)}</span></div>
-    </div>`;
-}
+SECTION_RENDERERS.calculators = () => window.SemperfiCalculators.render();
+SECTION_AFTER.calculators = () => window.SemperfiCalculators.mount();
 
 // ============================================================
 //                        REPORTS
@@ -2222,54 +2048,61 @@ SECTION_RENDERERS.reports = () => `
       <button class="btn btn-primary" onclick="exportCSV('processes')">📤 Processos (CSV)</button>
       <button class="btn btn-primary" onclick="exportCSV('deadlines')">📤 Prazos (CSV)</button>
       <button class="btn btn-primary" onclick="exportCSV('financial')">📤 Financeiro (CSV)</button>
-      <button class="btn btn-secondary" onclick="exportAllJSON()">💾 Backup completo (JSON)</button>
+      <button class="btn btn-secondary" onclick="exportAllJSON()">💾 Exportar dados carregados (JSON)</button>
     </div>
   </div>
 `;
 
 function generateReport(kind){
   const now = new Date().toLocaleString('pt-BR');
-  let html = `<html><head><title>Relatório ${kind}</title><style>body{font-family:Arial,sans-serif;padding:30px;color:#000}h1{border-bottom:2px solid #000;padding-bottom:8px}table{width:100%;border-collapse:collapse;margin:14px 0}th,td{border:1px solid #999;padding:6px;text-align:left;font-size:12px}th{background:#eee}.meta{color:#666;font-size:11px;margin-bottom:14px}</style></head><body>`;
-  html += `<h1>SEMPER-FI — Relatório de ${kind}</h1><div class="meta">Gerado em ${now} por ${SETTINGS.userName||''}</div>`;
+  let html = `<!doctype html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Relatório ${escapeHTML(kind)}</title><style>body{font-family:Arial,sans-serif;padding:30px;color:#000}h1{border-bottom:2px solid #000;padding-bottom:8px}table{width:100%;border-collapse:collapse;margin:14px 0}th,td{border:1px solid #999;padding:6px;text-align:left;font-size:12px}th{background:#eee}.meta{color:#666;font-size:11px;margin-bottom:14px}</style></head><body>`;
+  html += `<h1>SEMPER-FI — Relatório de ${escapeHTML(kind)}</h1><div class="meta">Gerado em ${now} por ${escapeHTML(SETTINGS.userName||'')}</div>`;
   if (kind==='processos'){
     html += `<table><tr><th>Número</th><th>Cliente</th><th>Tribunal</th><th>Área</th><th>Fase</th><th>Responsável</th><th>Valor</th></tr>`;
-    DB.processes.forEach(p=>{const c=dbGet('clients',p.clientId);html+=`<tr><td>${p.number}</td><td>${c?.name||''}</td><td>${p.court}</td><td>${p.area}</td><td>${p.phase}</td><td>${p.responsible}</td><td>${fmtMoney(p.value)}</td></tr>`;});
+    DB.processes.forEach(p=>{const c=dbGet('clients',p.clientId);html+=`<tr><td>${escapeHTML(p.number)}</td><td>${escapeHTML(c?.name||'')}</td><td>${escapeHTML(p.court)}</td><td>${escapeHTML(p.area)}</td><td>${escapeHTML(p.phase)}</td><td>${escapeHTML(p.responsible)}</td><td>${fmtMoney(p.value)}</td></tr>`;});
     html += `</table>`;
   } else if (kind==='prazos'){
     html += `<table><tr><th>Data</th><th>Título</th><th>Processo</th><th>Responsável</th><th>Status</th></tr>`;
-    DB.deadlines.sort((a,b)=>a.date.localeCompare(b.date)).forEach(d=>{const p=dbGet('processes',d.processId);html+=`<tr><td>${fmtDate(d.date)}</td><td>${d.title}</td><td>${p?.number||''}</td><td>${d.responsible||''}</td><td>${d.status}</td></tr>`;});
+    DB.deadlines.sort((a,b)=>a.date.localeCompare(b.date)).forEach(d=>{const p=dbGet('processes',d.processId);html+=`<tr><td>${fmtDate(d.date)}</td><td>${escapeHTML(d.title)}</td><td>${escapeHTML(p?.number||'')}</td><td>${escapeHTML(d.responsible||'')}</td><td>${escapeHTML(d.status)}</td></tr>`;});
     html += `</table>`;
   } else if (kind==='financeiro'){
     const tot = DB.financial.reduce((acc,f)=>{ acc[f.type] = (acc[f.type]||0) + f.amount; return acc; }, {});
     html += `<p><strong>Receitas:</strong> ${fmtMoney(tot.receita||0)} | <strong>Despesas:</strong> ${fmtMoney(tot.despesa||0)} | <strong>Saldo:</strong> ${fmtMoney((tot.receita||0)-(tot.despesa||0))}</p>`;
     html += `<table><tr><th>Data</th><th>Tipo</th><th>Descrição</th><th>Valor</th><th>Status</th></tr>`;
-    DB.financial.forEach(f=>html+=`<tr><td>${fmtDate(f.date)}</td><td>${f.type}</td><td>${f.description}</td><td>${fmtMoney(f.amount)}</td><td>${f.status}</td></tr>`);
+    DB.financial.forEach(f=>html+=`<tr><td>${fmtDate(f.date)}</td><td>${escapeHTML(f.type)}</td><td>${escapeHTML(f.description)}</td><td>${fmtMoney(f.amount)}</td><td>${escapeHTML(f.status)}</td></tr>`);
     html += `</table>`;
   } else if (kind==='intimacoes'){
     html += `<table><tr><th>ID</th><th>Fonte</th><th>Tipo</th><th>Recebido</th><th>Processo</th><th>Status</th></tr>`;
-    DB.intimations.forEach(i=>{const p=dbGet('processes',i.processId);html+=`<tr><td>${i.id}</td><td>${i.source}</td><td>${i.type}</td><td>${fmtDateTime(i.receivedAt)}</td><td>${p?.number||'—'}</td><td>${i.status}</td></tr>`;});
+    DB.intimations.forEach(i=>{const p=dbGet('processes',i.processId);html+=`<tr><td>${i.id}</td><td>${escapeHTML(i.source)}</td><td>${escapeHTML(i.type)}</td><td>${fmtDateTime(i.receivedAt)}</td><td>${escapeHTML(p?.number||'—')}</td><td>${escapeHTML(i.status)}</td></tr>`;});
     html += `</table>`;
   } else if (kind==='clientes'){
     html += `<table><tr><th>Nome</th><th>Tipo</th><th>Documento</th><th>Responsável</th><th>Status</th><th>Processos</th></tr>`;
-    DB.clients.forEach(c=>html+=`<tr><td>${c.name}</td><td>${c.type}</td><td>${c.document}</td><td>${c.responsible||''}</td><td>${c.status}</td><td>${DB.processes.filter(p=>p.clientId===c.id).length}</td></tr>`);
+    DB.clients.forEach(c=>html+=`<tr><td>${escapeHTML(c.name)}</td><td>${escapeHTML(c.type)}</td><td>${escapeHTML(c.document)}</td><td>${escapeHTML(c.responsible||'')}</td><td>${escapeHTML(c.status)}</td><td>${DB.processes.filter(p=>p.clientId===c.id).length}</td></tr>`);
     html += `</table>`;
   } else if (kind==='auditoria'){
     html += `<table><tr><th>Data/Hora</th><th>Ator</th><th>Módulo</th><th>Ação</th><th>Alvo</th><th>Resultado</th></tr>`;
-    DB.audit.slice(0,200).forEach(a=>html+=`<tr><td>${fmtDateTime(a.timestamp)}</td><td>${a.actor}</td><td>${a.module}</td><td>${a.action}</td><td>${a.target}</td><td>${a.result}</td></tr>`);
+    DB.audit.slice(0,200).forEach(a=>html+=`<tr><td>${fmtDateTime(a.timestamp)}</td><td>${escapeHTML(a.actor)}</td><td>${escapeHTML(a.module)}</td><td>${escapeHTML(a.action)}</td><td>${escapeHTML(a.target)}</td><td>${escapeHTML(a.result)}</td></tr>`);
     html += `</table>`;
   }
   html += `<div style="margin-top:30px;font-size:10px;color:#666;border-top:1px solid #ccc;padding-top:10px">SEMPER-FI — Central Jurídica Operacional | Relatório técnico, sem valor probatório autônomo</div></body></html>`;
   const w = window.open('', '_blank');
+  if (!w) { toast('Permita abrir a janela de impressão para gerar o relatório.', 'warning'); return; }
+  w.opener = null;
   w.document.write(html); w.document.close();
   setTimeout(()=>w.print(), 500);
   audit('reports','geracao',kind);
   toast('Relatório aberto — pronto para impressão/PDF','success');
 }
+function csvCell(value){
+  let text = String(value ?? '');
+  if (/^[\s\uFEFF]*[=+@-]/.test(text)) text = "'" + text;
+  return '"' + text.replace(/"/g, '""') + '"';
+}
 function exportCSV(collection){
   const data = DB[collection];
   if (!data.length){ toast('Sem dados','warning'); return; }
   const keys = Object.keys(data[0]);
-  const csv = [keys.join(','), ...data.map(row=>keys.map(k=>`"${String(row[k]??'').replace(/"/g,'""')}"`).join(','))].join('\n');
+  const csv = '\uFEFF' + [keys.map(csvCell).join(','), ...data.map(row=>keys.map(k=>csvCell(row[k])).join(','))].join('\r\n');
   const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = `semperfi_${collection}_${toISO(new Date())}.csv`;
@@ -2280,48 +2113,18 @@ function exportCSV(collection){
 function exportAllJSON(){
   const blob = new Blob([JSON.stringify(DB,null,2)], {type:'application/json'});
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = `semperfi_backup_${toISO(new Date())}.json`;
+  a.href = URL.createObjectURL(blob); a.download = `semperfi_exportacao_${toISO(new Date())}.json`;
   a.click(); URL.revokeObjectURL(a.href);
   audit('reports','backup_completo','json');
-  toast('Backup baixado','success');
+  toast('Dados carregados exportados. Arquivos originais e banco de dados não estão incluídos.','info');
 }
 
 // ============================================================
 //                        AUDIT
 // ============================================================
 const auditState = { module:'todos', action:'todas', actor:'' };
-SECTION_RENDERERS.audit = () => {
-  const filtered = DB.audit.filter(a=>{
-    if (auditState.module!=='todos' && a.module!==auditState.module) return false;
-    if (auditState.action!=='todas' && a.action!==auditState.action) return false;
-    if (auditState.actor && !a.actor.toLowerCase().includes(auditState.actor.toLowerCase())) return false;
-    return true;
-  });
-  return `
-    <h1 class="page-title">Auditoria</h1>
-    <p class="page-subtitle">${DB.audit.length} eventos registrados | ${filtered.length} exibidos</p>
-    <div class="panel">
-      <div class="filter-bar">
-        <select class="form-select" id="audModule"><option value="todos">Módulo: Todos</option><option value="clients">Clientes</option><option value="processes">Processos</option><option value="deadlines">Prazos</option><option value="appointments">Compromissos</option><option value="intimations">Intimações</option><option value="financial">Financeiro</option><option value="files">Arquivos</option><option value="queries">Consultas</option><option value="reports">Relatórios</option><option value="settings">Configurações</option></select>
-        <select class="form-select" id="audAction"><option value="todas">Ação: Todas</option><option value="criacao">Criação</option><option value="edicao">Edição</option><option value="exclusao">Exclusão</option><option value="consulta">Consulta</option><option value="geracao">Geração</option><option value="exportacao_csv">Exportação CSV</option><option value="backup_completo">Backup</option></select>
-        <input type="text" class="form-input grow" id="audActor" placeholder="Filtrar por ator..." value="${auditState.actor}">
-      </div>
-      ${filtered.length?`<table style="font-size:12px"><thead><tr><th>Data/Hora</th><th>Ator</th><th>Perfil</th><th>Módulo</th><th>Ação</th><th>Alvo</th><th>Resultado</th><th>ID Correlação</th></tr></thead><tbody>
-        ${filtered.slice(0,200).map(a=>`<tr>
-          <td>${fmtDateTime(a.timestamp)}</td><td>${a.actor}</td><td>${a.profile}</td>
-          <td>${a.module}</td><td>${a.action}</td><td>${a.target}</td>
-          <td><span class="status-chip ${a.result==='sucesso'?'completed':'critical'}">${a.result}</span></td>
-          <td class="masked" style="font-size:10px">${a.correlationId}</td></tr>`).join('')}
-      </tbody></table>${filtered.length>200?`<div class="text-muted mt-12">Mostrando os 200 mais recentes de ${filtered.length}</div>`:''}`:'<div class="empty-state"><div class="empty-state-icon">🔐</div><div class="empty-state-title">Sem registros</div></div>'}
-    </div>
-    <div class="alert alert-info mt-20"><span>ℹ️</span><span><strong>Auditoria:</strong> Consulte os eventos da organização e a verificação de integridade na API.</span></div>
-  `;
-};
-SECTION_AFTER.audit = () => {
-  document.getElementById('audModule').onchange = e=>{auditState.module=e.target.value;renderSection('audit');};
-  document.getElementById('audAction').onchange = e=>{auditState.action=e.target.value;renderSection('audit');};
-  document.getElementById('audActor').addEventListener('input', e=>{auditState.actor=e.target.value;renderSection('audit');document.getElementById('audActor').focus();});
-};
+SECTION_RENDERERS.audit = () => window.SemperfiAudit.render();
+SECTION_AFTER.audit = () => window.SemperfiAudit.mount();
 
 // ============================================================
 //                        SETTINGS
@@ -2340,8 +2143,9 @@ SECTION_RENDERERS.settings = () => `
     <div class="panel">
       <div class="panel-title">🔒 Privacidade e Segurança</div>
       <div class="form-group"><label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input type="checkbox" id="s_mask" ${SETTINGS.masked?'checked':''}> Mascarar dados sensíveis por padrão</label></div>
-<p class="text-muted">Acesso institucional e recuperação de senha são gerenciados pelo provedor da organização.</p>
+<p class="text-muted">Para recuperar o acesso, procure o administrador ou o provedor de acesso institucional da organização.</p>
       <button class="btn btn-secondary mt-12" onclick="saveAccountSettings()" style="width:100%">Salvar preferências</button>
+      <button class="btn btn-secondary mt-12" type="button" data-a11y-open aria-controls="a11yDialog" aria-haspopup="dialog" aria-expanded="false">Aparência e acessibilidade</button>
     </div>
     <div class="panel">
       <div class="panel-title">🔌 Integrações</div>
@@ -3065,7 +2869,7 @@ WORKSPACE_RENDERERS.vinculos = (inv) => {
     if (!a||!b) return '';
     const dashed = r.status!=='validada';
     return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${dashed?'#8b949e':'#00d9ff'}" stroke-width="2" ${dashed?'stroke-dasharray="4,4"':''}>
-      <title>${escapeHTML(OSINT_VOCAB.relationType[r.relationType]||r.relationType)} — Confiança ${((r.confidenceScore||0)*100).toFixed(0)}% — ${r.evidenceIds?.length||0} evidência(s) — ${r.status}</title>
+      <title>${escapeHTML(OSINT_VOCAB.relationType[r.relationType]||r.relationType)} — Confiança ${((r.confidenceScore||0)*100).toFixed(0)}% — ${r.evidenceIds?.length||0} evidência(s) — ${escapeHTML(r.status)}</title>
     </line>`;
   }).join('');
   const nodes = ents.map(e=>{
@@ -3082,7 +2886,7 @@ WORKSPACE_RENDERERS.vinculos = (inv) => {
     <svg width="${W}" height="${H}" style="background:var(--obsidian);border:1px solid var(--border-color);border-radius:6px">${edges}${nodes}</svg>
     <h4 class="mt-20" style="font-size:13px">Relações (${rels.length})</h4>
     ${rels.length?`<table style="font-size:11px"><thead><tr><th>De</th><th>Para</th><th>Tipo</th><th>Confiança</th><th>Evidências</th><th>Status</th></tr></thead><tbody>
-      ${rels.map(r=>{const f=dbGet('osintEntities',r.fromEntityId),t=dbGet('osintEntities',r.toEntityId);return `<tr><td>${escapeHTML(f?.displayName||'—')}</td><td>${escapeHTML(t?.displayName||'—')}</td><td>${escapeHTML(OSINT_VOCAB.relationType[r.relationType]||r.relationType)}</td><td>${((r.confidenceScore||0)*100).toFixed(0)}%</td><td>${r.evidenceIds?.length||0}</td><td>${r.status}</td></tr>`;}).join('')}
+      ${rels.map(r=>{const f=dbGet('osintEntities',r.fromEntityId),t=dbGet('osintEntities',r.toEntityId);return `<tr><td>${escapeHTML(f?.displayName||'—')}</td><td>${escapeHTML(t?.displayName||'—')}</td><td>${escapeHTML(OSINT_VOCAB.relationType[r.relationType]||r.relationType)}</td><td>${((r.confidenceScore||0)*100).toFixed(0)}%</td><td>${r.evidenceIds?.length||0}</td><td>${escapeHTML(r.status)}</td></tr>`;}).join('')}
     </tbody></table>`:'<div class="text-muted" style="font-size:12px">Nenhuma relação cadastrada.</div>'}
   `;
 };
@@ -3212,24 +3016,23 @@ async function osintConnectorExecute(connectorId, payload, investigationId){
       brasilapi_ddd:{ connector_id:'brasilapi', payload:{ kind:'ddd', value:(payload.target||'').replace(/\D/g,'') }, scope_codes:['territorial_cadastral'] },
       brasilapi_bancos:{ connector_id:'brasilapi', payload:{ kind:'bank', value:(payload.target||'').replace(/\D/g,'') }, scope_codes:['empresarial'] },
       datajud_cnj:{ connector_id:'datajud', payload:{ process_number: payload.target || '', tribunal_alias: payload.tribunalAlias || 'tjsp' }, scope_codes:['judicial_publico'] },
-      rdap_dns:{ connector_id:'rdap_dns', payload:{ domain: payload.target || '', authorized:true }, scope_codes:['seguranca_digital_defensiva'] }
+      rdap_dns:{ connector_id:'rdap_dns', payload:{ domain: payload.target || '', authorized:true }, scope_codes:['digital_defensive'] }
     };
     const mapped = kindMap[connectorId];
     if (!mapped) throw new Error(`Conector ${connectorId} ainda não foi liberado para produção nesta UI.`);
+    const investigation = investigationId ? dbGet('investigations', investigationId) : null;
     let res;
     try {
-      res = await backendApi('/osint/runs?wait=true', {
-        method:'POST',
-        body: JSON.stringify({
+      res = await window.SemperfiConnectorJobs.run(backendApi, {
           connector_id:mapped.connector_id,
           investigation_id: investigationId || null,
+          target_entity_id: payload.entityId || null,
           payload:mapped.payload,
-          purpose:`Consulta ${connector.name} via interface SEMPER-FI`,
-          legal_basis:'legitimo_interesse',
-          authorization_reference:'Fluxo autenticado da interface SEMPER-FI',
+          purpose:investigation?.purpose || `Consulta ${connector.name} via interface SEMPER-FI`,
+          legal_basis:investigation?.legalBasis || 'legitimo_interesse',
+          authorization_reference:investigation?.authorizationReference || 'Fluxo autenticado da interface SEMPER-FI',
           scope_codes:mapped.scope_codes,
-          risk_level:'low'
-        })
+          risk_level:mapApiRisk(investigation?.riskLevel || 'low')
       });
     } catch(err){
       throw new Error(apiErrorMessage(err));
@@ -3290,7 +3093,7 @@ async function quickPlannerAgent(investigationId, skipBilling=false){
       const run = { id:uid('orun'), investigationId, connectorId:task.connectorId, targetEntityId:task.entityId, purpose:task.purpose, scopeSnapshot:[...scope], requestFingerprint:(await sha256Hex(JSON.stringify(task))).slice(0,16), startedAt:Date.now(), finishedAt:null, status:'em_execucao', resultSummary:null, errorMessage:null, actor:SETTINGS.userName||'', correlationId:Math.random().toString(36).slice(2,12) };
       DB.osintRuns.push(run); saveDB();
       const ent = dbGet('osintEntities', task.entityId);
-      const result = await osintConnectorExecute(task.connectorId, {target:ent.displayName, fingerprint:ent.documentFingerprint}, investigationId);
+      const result = await osintConnectorExecute(task.connectorId, {entityId:ent.id}, investigationId);
       if (result.runId) run.id = result.runId;
       run.finishedAt = Date.now(); run.status='ok'; run.resultSummary = result.summary;
       run.rawData = result.rawData;
@@ -3354,11 +3157,12 @@ async function runAgentsForEntity(investigationId, entityId, skipBilling=false){
   const inv = dbGet('investigations', investigationId);
   const scope = inv.scope||[];
   const fontes = DB.sourceCatalog.filter(s=>s.enabled && s.allowedTargetTypes.includes(ent.entityType) && scope.some(sc=>s.category===sc));
+  let succeeded = 0, failed = 0;
   for (const src of fontes){
     try {
       const run = { id:uid('orun'), investigationId, connectorId:src.id, targetEntityId:entityId, purpose:`Coleta ${src.name}`, scopeSnapshot:[...scope], requestFingerprint:(await sha256Hex(src.id+entityId)).slice(0,16), startedAt:Date.now(), finishedAt:null, status:'em_execucao', actor:SETTINGS.userName||'', correlationId:Math.random().toString(36).slice(2,12) };
       DB.osintRuns.push(run);
-      const result = await osintConnectorExecute(src.id, {target:ent.displayName}, investigationId);
+      const result = await osintConnectorExecute(src.id, {entityId:ent.id}, investigationId);
       if (result.runId) run.id = result.runId;
       run.finishedAt = Date.now(); run.status='ok'; run.resultSummary = result.summary; run.rawData = result.rawData;
       const finding = { id:uid('ofnd'), investigationId, entityId, type:src.id, title:result.summary, statement:JSON.stringify(result.rawData).slice(0,500), sourceCount:1, confidenceScore:result.confidence, classification:'dado_bruto', humanValidated:false, evidenceIds:[], createdAt:Date.now(), updatedAt:Date.now(), runId:run.id };
@@ -3383,11 +3187,15 @@ async function runAgentsForEntity(investigationId, entityId, skipBilling=false){
       DB.osintFindings.push(finding);
       saveDB();
       osintAudit('execucao_coleta', investigationId, {runId:run.id, connectorId:src.id, status:'ok'});
+      succeeded += 1;
     } catch(err){
+      failed += 1;
+      const pending = DB.osintRuns.findLast(item => item.targetEntityId === entityId && item.connectorId === src.id && item.status === 'em_execucao');
+      if (pending) { pending.status='erro'; pending.errorMessage=apiErrorMessage(err); pending.finishedAt=Date.now(); }
       osintAudit('falha_coleta', investigationId, {result:'erro', message:apiErrorMessage(err)});
     }
   }
-  toast(`Coletas concluídas para ${ent.displayName}`,'success');
+  toast(`Coletas de ${ent.displayName}: ${succeeded} concluída(s), ${failed} falha(s).`, failed ? 'warning' : 'success');
   renderWorkspace();
 }
 
@@ -3800,6 +3608,8 @@ Gerado por: ${escapeHTML(SETTINGS.userName||'')} em ${now}
   }
 
   const w = window.open('','_blank');
+  if (!w) { toast('O rascunho foi preparado. Permita abrir a janela de impressão e consulte os relatórios registrados na API.', 'warning'); return; }
+  w.opener = null;
   w.document.write(html); w.document.close();
   setTimeout(()=>w.print(), 600);
   osintAudit('geracao_relatorio', investigationId, {reportHash:reportHash.slice(0,16), verificationCode});
@@ -3836,7 +3646,7 @@ SECTION_RENDERERS.osinttools = () => `
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">
       ${OSINT_TOOLS.map(t=>`<div onclick="selectOsintTool('${t.id}')" style="padding:14px;background:var(--obsidian);border-radius:8px;cursor:pointer;border:2px solid ${osintToolsState.selected===t.id?'var(--teal-accent)':'var(--border-color)'};transition:all .15s">
         <div style="font-size:22px;margin-bottom:6px">${t.icon}</div>
-        <div style="font-weight:700;font-size:13px;margin-bottom:4px">${t.name}</div>
+        <div style="font-weight:700;font-size:13px;margin-bottom:4px">${escapeHTML(t.name)}</div>
         <div class="text-muted" style="font-size:11px">${escapeHTML(t.desc)}</div>
       </div>`).join('')}
     </div>
@@ -3858,7 +3668,7 @@ function renderOsintToolPanel(){
   };
   return `
     <div class="panel">
-      <div class="panel-title">${t.icon} ${t.name}</div>
+      <div class="panel-title">${t.icon} ${escapeHTML(t.name)}</div>
       <div class="form-group"><label class="form-label">Alvo</label>
         <input class="form-input" id="otTarget" placeholder="${placeholders[t.kind]||''}">
       </div>
@@ -4054,7 +3864,7 @@ SECTION_RENDERERS.agentes = () => {
           <div style="font-size:26px">${a.icon}</div>
           <span class="badge badge-primary" style="font-size:9px">${escapeHTML(a.cat)}</span>
         </div>
-        <div style="font-weight:700;margin-bottom:4px">${a.name}</div>
+        <div style="font-weight:700;margin-bottom:4px">${escapeHTML(a.name)}</div>
         <div class="text-muted" style="font-size:11px;margin-bottom:8px">${escapeHTML(a.desc)}</div>
         <div style="font-family:'JetBrains Mono';font-size:9px;color:var(--gold-accent)">⚙ ${a.stack}</div>
       </div>`).join('')}
@@ -4070,7 +3880,7 @@ function renderAgentePanel(){
   const a = AGENTES_IA.find(x=>x.id===agentesState.selected);
   return `
     <div class="panel mt-20">
-      <div class="panel-title">${a.icon} ${a.name} — Execução</div>
+      <div class="panel-title">${a.icon} ${escapeHTML(a.name)} — Execução</div>
       <div class="form-group"><label class="form-label">Entrada</label><input class="form-input" id="agInput" placeholder="${getAgentPlaceholder(a.kind)}"></div>
       <p class="text-muted mb-12">Resultados temporários. O registro dos resultados destes agentes em investigações ainda não está disponível.</p>
       <button class="btn btn-primary" onclick="executeAgent()" ${agentesState.loading?'disabled':''}>${agentesState.loading?'<span class="spinner"></span> Executando...':'▶ Executar agente'}</button>
@@ -4524,7 +4334,7 @@ SECTION_RENDERERS.transparencia = () => `
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px">
       ${TRANSP_ENDPOINTS.map(e=>`<div onclick="selectTransp('${e.id}')" style="padding:14px;background:var(--obsidian);border-radius:8px;cursor:pointer;border:2px solid ${transpState.selected===e.id?'var(--teal-accent)':'var(--border-color)'}">
         <div style="font-size:24px;margin-bottom:6px">${e.icon}</div>
-        <div style="font-weight:700;font-size:13px;margin-bottom:4px">${e.name}</div>
+        <div style="font-weight:700;font-size:13px;margin-bottom:4px">${escapeHTML(e.name)}</div>
         <div class="text-muted" style="font-size:11px">${escapeHTML(e.desc)}</div>
         <div style="font-family:'JetBrains Mono';font-size:10px;color:var(--gold-accent);margin-top:6px">api/${e.path}</div>
       </div>`).join('')}
@@ -4540,7 +4350,7 @@ function renderTranspPanel(){
   const e = TRANSP_ENDPOINTS.find(x=>x.id===transpState.selected);
   return `
     <div class="panel">
-      <div class="panel-title">${e.icon} ${e.name}</div>
+      <div class="panel-title">${e.icon} ${escapeHTML(e.name)}</div>
       <div class="alert alert-info"><span>ℹ️</span><span>Endpoint: <code>https://api.portaldatransparencia.gov.br/api-de-dados/${e.path}</code></span></div>
       <div class="form-group"><label class="form-label">Parâmetros (formato chave=valor por linha)</label>
         <textarea class="form-textarea" id="trParams" style="min-height:100px" placeholder="codigoIbge=3550308&pagina=1&mesAno=202601"></textarea>
@@ -4633,7 +4443,7 @@ SECTION_RENDERERS.apiexplorer = () => {
   });
   return `
     <h1 class="page-title">🌐 API Explorer</h1>
-    <p class="page-subtitle">Catálogo navegável de ${API_CATALOG.length} APIs públicas integradas. Filtragem por categoria, autenticação e CORS.</p>
+    <p class="page-subtitle">Catálogo navegável de ${API_CATALOG.length} Referências de APIs públicas. Filtragem por categoria, autenticação e CORS.</p>
     <div class="panel">
       <div class="filter-bar">
         <input class="form-input grow" id="apiSearch" placeholder="Buscar API..." value="${escapeHTML(apiState.search)}">
@@ -4837,13 +4647,13 @@ WORKSPACE_RENDERERS.plano = (inv, ctx) => {
         const partial = (tacerState[p.id]||0) > 0 && !complete;
         return `<div style="padding:12px;background:${complete?'var(--success)':partial?'var(--warning)':'var(--obsidian)'};border-radius:6px;text-align:center;border:2px solid ${complete?'var(--success)':partial?'var(--warning)':'var(--border-color)'};color:${complete||partial?'var(--obsidian)':'var(--text-secondary)'}">
           <div style="font-size:24px">${p.icon}</div>
-          <div style="font-weight:700;font-size:12px;margin-top:4px">${p.name}</div>
+          <div style="font-weight:700;font-size:12px;margin-top:4px">${escapeHTML(p.name)}</div>
           <div style="font-size:10px;margin-top:2px">${tacerState[p.id]||0}/${p.checklist.length}</div>
         </div>`;
       }).join('')}
     </div>
     ${TACER_PHASES.map(p=>`<div class="panel mb-12">
-      <div class="panel-title">${p.icon} ${p.name} — ${p.desc} <span class="text-muted" style="font-size:11px;font-weight:400">${escapeHTML(p.iso)}</span></div>
+      <div class="panel-title">${p.icon} ${escapeHTML(p.name)} — ${p.desc} <span class="text-muted" style="font-size:11px;font-weight:400">${escapeHTML(p.iso)}</span></div>
       ${p.checklist.map((item,idx)=>`<label style="display:flex;gap:8px;align-items:center;padding:6px;cursor:pointer;font-size:13px">
         <input type="checkbox" ${(tacerState[p.id]||0)>idx?'checked':''} onchange="toggleTacerItem('${inv.id}','${p.id}',${idx})"> ${escapeHTML(item)}
       </label>`).join('')}
@@ -5364,12 +5174,12 @@ function openMovementForm(processId, id){
   const m = id ? DB.processMovements.find(x=>x.id===id) : {processId, date:toISO(new Date()), type:'despacho', source:'manual', authorId:SETTINGS.userName||'', description:'', attachments:[]};
   openModal({title: id?'Editar andamento':'Novo andamento', body:`
     <div class="form-row">
-      <div class="form-group"><label class="form-label">Data *</label><input class="form-input" id="mvDate" type="date" value="${m.date}"></div>
+      <div class="form-group"><label class="form-label">Data *</label><input class="form-input" id="mvDate" type="date" value="${escapeHTML(m.date)}"></div>
       <div class="form-group"><label class="form-label">Tipo *</label><select class="form-select" id="mvType">${MOV_TYPES.map(t=>`<option value="${t.id}" ${m.type===t.id?'selected':''}>${escapeHTML(t.label)}</option>`).join('')}</select></div>
     </div>
     <div class="form-group"><label class="form-label">Descrição *</label><textarea class="form-textarea" id="mvDesc" style="min-height:100px">${escapeHTML(m.description)}</textarea></div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">Autor</label><input class="form-input" id="mvAuthor" value="${escapeHTML(m.authorId||'')}"></div>
+      <div class="form-group"><label class="form-label">Autor registrado</label><input class="form-input" id="mvAuthor" readonly value="${escapeHTML(m.authorId||SETTINGS.userName||'')}"><p class="text-muted">A autoria é registrada pelo servidor a partir da sessão.</p></div>
       <div class="form-group"><label class="form-label">Fonte</label><select class="form-select" id="mvSource"><option value="manual" ${m.source==='manual'?'selected':''}>Manual</option><option value="diario_oficial" ${m.source==='diario_oficial'?'selected':''}>Diário Oficial</option><option value="automatico" ${m.source==='automatico'?'selected':''}>Automático</option></select></div>
     </div>
   `, footer:`<button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>${id?`<button class="btn btn-danger" onclick="deleteMovement('${id}');closeModal()">Excluir</button>`:''}<button class="btn btn-primary" onclick="saveMovement('${processId}','${id||''}')">Salvar</button>`});
@@ -5421,7 +5231,7 @@ async function deleteMovement(id){
 function exportMovementsCSV(processId){
   const movs = DB.processMovements.filter(m=>m.processId===processId);
   if (!movs.length){ toast('Sem andamentos','warning'); return; }
-  const csv = ['data,tipo,fonte,autor,descricao', ...movs.map(m=>[m.date, m.type, m.source, m.authorId, `"${(m.description||'').replace(/"/g,'""')}"`].join(','))].join('\n');
+  const csv = '\uFEFF' + ['data,tipo,fonte,autor,descricao', ...movs.map(m=>[m.date, m.type, m.source, m.authorId, m.description].map(csvCell).join(','))].join('\r\n');
   const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `andamentos_${processId}_${toISO(new Date())}.csv`; a.click(); URL.revokeObjectURL(a.href);
   toast('CSV baixado','success');
@@ -5436,15 +5246,65 @@ function parsePrazoFromIntimacao(content){
 }
 
 function lancarIntimacaoNoAndamento(intimationId){
-  toast('O lançamento conjunto ainda não está disponível. Cadastre o andamento, o prazo e o compromisso em suas respectivas telas.', 'warning');
+  const item = dbGet('intimations', intimationId);
+  if (!item?.processId || item.status === 'concluida') { toast('Associe uma intimação aberta a um processo antes de lançar.', 'warning'); return; }
+  openModal({title:'Lançar intimação no processo', body:`
+    <p>Revise os dados. O andamento e os registros opcionais serão salvos juntos, e a intimação será concluída.</p>
+    <div class="form-group"><label for="launchDate" class="form-label">Data do andamento *</label><input id="launchDate" class="form-input" type="date" value="${toISO(new Date())}" required></div>
+    <div class="form-group"><label for="launchDescription" class="form-label">Descrição do andamento *</label><textarea id="launchDescription" class="form-textarea" required minlength="3">${escapeHTML(item.content)}</textarea></div>
+    <fieldset><legend><label><input id="launchDeadline" type="checkbox"> Criar prazo</label></legend>
+      <p>Informe a data confirmada pelo responsável. A contagem processual não é presumida a partir do texto.</p>
+      <div id="launchDeadlineFields" hidden><label for="launchDeadlineTitle" class="form-label">Título *</label><input id="launchDeadlineTitle" class="form-input" maxlength="255" value="Providência da intimação">
+      <label for="launchDeadlineDate" class="form-label">Vencimento confirmado *</label><input id="launchDeadlineDate" class="form-input" type="date"></div>
+    </fieldset>
+    <fieldset><legend><label><input id="launchAppointment" type="checkbox"> Criar compromisso</label></legend>
+      <div id="launchAppointmentFields" hidden><label for="launchAppointmentTitle" class="form-label">Título *</label><input id="launchAppointmentTitle" class="form-input" maxlength="255" value="Providência da intimação">
+      <label for="launchAppointmentDate" class="form-label">Data *</label><input id="launchAppointmentDate" class="form-input" type="date">
+      <label for="launchAppointmentTime" class="form-label">Hora</label><input id="launchAppointmentTime" class="form-input" type="time">
+      <label for="launchAppointmentLocation" class="form-label">Local</label><input id="launchAppointmentLocation" class="form-input" maxlength="255"></div>
+    </fieldset>`, footer:`<button class="btn btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" onclick="confirmLancamentoIntimacao('${intimationId}')">Confirmar lançamento</button>`,
+    onMount(modal){
+      for (const prefix of ['launchDeadline','launchAppointment']) {
+        const checkbox = modal.querySelector('#'+prefix), fields = modal.querySelector('#'+prefix+'Fields');
+        const update = () => { fields.hidden = !checkbox.checked; fields.querySelectorAll('input').forEach(input => { input.disabled = !checkbox.checked; input.required = checkbox.checked && /(?:Title|Date)$/.test(input.id); }); };
+        checkbox.addEventListener('change', update); update();
+      }
+    }
+  });
 }
 
-function confirmLancamentoIntimacao(intimationId){
-  toast('O lançamento conjunto ainda não está disponível. Nenhum andamento, prazo ou compromisso foi criado.', 'warning');
+async function confirmLancamentoIntimacao(intimationId){
+  const value = id => document.getElementById(id).value.trim();
+  const payload = {
+    movement:{occurred_on:value('launchDate'),movement_type:'intimacao',description:value('launchDescription')},
+    deadline:document.getElementById('launchDeadline').checked ? {title:value('launchDeadlineTitle'),due_date:value('launchDeadlineDate'),deadline_type:'manifestation'} : null,
+    appointment:document.getElementById('launchAppointment').checked ? {title:value('launchAppointmentTitle'),appointment_date:value('launchAppointmentDate'),appointment_time:value('launchAppointmentTime') || null,appointment_type:'meeting',location:value('launchAppointmentLocation') || null} : null
+  };
+  try {
+    const result = await backendApi(`/intimations/${intimationId}/launch`, {method:'POST',body:JSON.stringify(payload)});
+    closeModal();
+    toast(result.already_launched ? 'Este lançamento já estava registrado.' : 'Intimação lançada e concluída.', 'success');
+    try { await refreshBackendBootstrap(); renderSection('intimations'); renderNotifications(); }
+    catch (_) { toast('O lançamento foi salvo. Recarregue a página para atualizar os registros.', 'warning'); }
+  } catch(error) { toast(apiErrorMessage(error), 'error'); }
 }
 // ============================================================
 //                        BOOT
 // ============================================================
+SECTION_RENDERERS.billing = () => window.SemperfiCommercial.render() + window.SemperfiBillingCheckout.render();
+SECTION_AFTER.billing = () => { window.SemperfiCommercial.mount(); window.SemperfiBillingCheckout.mount(backendApi); };
+SECTION_RENDERERS.transparencia = () => window.SemperfiIntegrations.renderTransparency(DB.investigations);
+SECTION_AFTER.transparencia = () => window.SemperfiIntegrations.mountTransparency(backendApi);
+SECTION_RENDERERS.agentes = () => window.SemperfiIntegrations.renderAgents(DB.investigations);
+SECTION_AFTER.agentes = () => window.SemperfiIntegrations.mountAgents(backendApi);
+const localReportsRenderer = SECTION_RENDERERS.reports;
+SECTION_RENDERERS.reports = () => localReportsRenderer() + window.SemperfiIntegrations.renderReports();
+SECTION_AFTER.reports = () => window.SemperfiIntegrations.mountReports(backendApi);
+const localFilesRenderer = SECTION_RENDERERS.metadata;
+const localFilesMount = SECTION_AFTER.metadata;
+SECTION_RENDERERS.metadata = () => window.SemperfiIntegrations.renderFiles(DB.investigations) + `<details class="panel mt-20"><summary>Inspeção temporária de arquivos no navegador</summary>${localFilesRenderer()}</details>`;
+SECTION_AFTER.metadata = () => { localFilesMount?.(); window.SemperfiIntegrations.mountFiles(backendApi); };
+
 async function startWorkspace(){
   try {
     await hydrateFromBackend();
@@ -5459,14 +5319,19 @@ async function startWorkspace(){
     retry.hidden = false; retry.onclick = () => location.reload();
   }
 }
+// Every save uses native validation and a single in-flight request per action.
+for (const name of ['saveClient','saveProcess','saveDeadline','saveAppointment','saveIntimation','saveFinancial','saveMovement','confirmLancamentoIntimacao']) {
+  const original = window[name];
+  let pending = false;
+  window[name] = async function(...args) {
+    if (pending) return;
+    const form = document.getElementById('legalOperationForm');
+    if (form?.dataset.action === name && !form.reportValidity()) return;
+    const button = [...document.querySelectorAll('#modalContent .modal-footer button[onclick]')].find(item => item.getAttribute('onclick').trim().startsWith(name+'('));
+    pending = true;
+    try { return await window.SemperfiLegalForms.submit(button, () => original(...args)); }
+    finally { pending = false; }
+  };
+}
 startWorkspace();
 
-function validateCalculatorInputs(ids){
-  for (const id of ids){
-    const input = document.getElementById(id);
-    if (!input || !input.value || !input.checkValidity() || (input.type === "number" && Number(input.value) < 0)){
-      toast("Preencha os valores e as datas do cálculo.", "warning"); input?.focus(); return false;
-    }
-  }
-  return true;
-}

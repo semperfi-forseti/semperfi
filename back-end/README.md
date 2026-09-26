@@ -7,11 +7,55 @@ API de gestão jurídica, investigação estruturada e evidências digitais. Fas
 - Núcleo de clientes, processos, andamentos, prazos, agenda, intimações e financeiro com persistência.
 - Cadastro e login PF/PJ com senha e código por e-mail, sessão opaca em cookie HttpOnly e alternativa de provedor OIDC. Acesso técnico restrito a desenvolvimento/testes explícitos.
 - Isolamento por `tenant_id`, políticas, auditoria encadeada, conectores e motores TACER/SIERA.
-- Ingestão, cofre e relatórios dependem de serviços externos. Agentes supervisionados têm implementação parcial.
+- Ingestão, cofre e relatórios dependem de serviços externos. Agentes supervisionados usam provider Ollama desacoplado, com filas e resultados persistidos; execução real depende da instalação/configuração local.
+- Checkout Asaas **somente Sandbox** com preço no servidor, idempotência e webhook autenticado. Não libera assinatura, carteira ou créditos de produção.
 - Inicialização cria tabelas em desenvolvimento/teste, **sem popular registros fictícios**. Em produção, o operador aplica migrations.
 - Nenhum banco existente é apagado ou automaticamente limpo pela aplicação.
 
 ## Requisitos
+
+### Configuração de homologação: Asaas e Ollama
+
+As credenciais são lidas exclusivamente de `back-end/.env`, ignorado pelo Git. `.env.example` contém apenas nomes de variáveis e valores sem segredo. Nenhuma chave é enviada ao frontend. O ambiente atual permanece local: frontend `http://127.0.0.1:4173` e API `http://127.0.0.1:8000`.
+
+**Asaas Sandbox**
+
+- `ASAAS_SANDBOX_ENABLED=false`: manter desabilitado até concluir a configuração pública de homologação.
+- `ASAAS_SANDBOX_API_KEY`: chave da conta Sandbox, com prefixo de homologação; o adapter não aceita produção.
+- `ASAAS_WEBHOOK_TOKEN`: segredo aleatório próprio, de pelo menos 32 caracteres, configurado também no webhook do Asaas.
+- `ASAAS_CHECKOUT_RETURN_URL`: URL HTTPS pública do frontend. Deixar em branco enquanto não houver hospedagem/túnel; não usar endereço fictício.
+- O webhook deve apontar para a futura origem pública da API mais `/v1/billing/webhooks/asaas`. Essa origem pertence à configuração de hospedagem/Asaas; não é codificada no frontend nem presumida pelo servidor.
+- Configurar os eventos `CHECKOUT_CREATED`, `CHECKOUT_PAID`, `CHECKOUT_CANCELED` e `CHECKOUT_EXPIRED`. O header `asaas-access-token` é verificado em tempo constante; repetição de evento é idempotente. O callback serve somente para retornar à interface.
+- Aplicar a migration `20260923_0004` no banco de homologação após backup, antes de utilizar `/v1/billing`. Ela cria pedidos e recibos de webhook com políticas RLS em PostgreSQL. Os testes SQLite não homologam RLS nem contas reais.
+- O fluxo implementado é **assinatura mensal por cartão no Sandbox**. Pagamento confirmado produz somente estado de teste. Créditos, carteiras, adicionais, recorrências posteriores, troca/cancelamento e franquias de produção ainda não estão integrados.
+
+Referências do contrato: [checkout recorrente Asaas](https://docs.asaas.com/docs/checkout-com-assinatura-recorrente) e [eventos do checkout](https://docs.asaas.com/docs/eventos-para-checkout).
+
+**Ollama local**
+
+```dotenv
+AI_PROVIDER=disabled
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=
+OLLAMA_TIMEOUT_SECONDS=120
+```
+
+Manter o modelo vazio até confirmar instalação, memória disponível e GPU/VRAM. A máquina informada possui 16 GB de RAM; esta configuração não presume um modelo adequado. Após instalar um modelo local, configurar seu nome exato e `AI_PROVIDER=ollama`. Em contêiner, configurar a origem privada alcançável pelo worker; loopback dentro do contêiner não é o host.
+
+`AgentProvider` separa a aplicação do fornecedor. O adapter atual chama `/api/chat`, sem streaming, com schema JSON, limite de resposta e timeout. Não há fallback cloud, execução de ferramentas ou publicação automática de conclusões. Referência: [API do Ollama](https://docs.ollama.com/api/chat).
+
+`GET /v1/agents/status` indica a configuração, não a saúde do modelo. `POST /v1/agents/runs` registra o texto e enfileira; `GET /v1/agents/runs` e `GET /v1/agents/runs/{id}` acompanham estados `queued`, `running`, `pending_human_review` ou `failed`. Worker, Redis e modelo precisam estar disponíveis. Falhas ficam registradas sem fabricar resultados. Evidências e investigações fornecidas são validadas por organização; o modelo só pode referenciar IDs presentes na entrada.
+
+### Fluxos revisados nesta entrega
+
+- Formulários jurídicos validam campos, valores e relacionamentos; respostas PATCH são serializadas após atualizar valores gerados pelo banco. Auditor tem leitura, sem permissão para mutações/importação.
+- Lançamento de intimação é atômico e idempotente, com testes de concorrência e rollback.
+- Consultas externas são enfileiradas e acompanhadas até um resultado terminal; `queued` não significa sucesso. Retomar acompanhamento não cria nova consulta.
+- Aprovação de relatórios e downloads exigem referências válidas, tenant e MFA. O hash de preservação usa os bytes do PDF.
+- Upload, finalização, histórico, verificação e download de evidências estão ligados à interface. Finalização mantém o original temporário até confirmar a transação; atestação exige preservação.
+- A interface distribuída em `app/static/frontend` inclui temas, acessibilidade e os módulos operacionais novos. Alterações devem partir de `front-end`, seguido do script de sincronização.
+
+As limitações por aba e o critério de prontidão ficam no [README do frontend](../front-end/README.md#prontidão-para-lançamento).
 
 | Componente | Finalidade |
 | --- | --- |
@@ -185,10 +229,10 @@ No modo OIDC, o provedor trata senha/MFA. Estados OIDC pendentes ficam na memór
 | RF-B14 | Solicitar/confirmar legal hold | Segundo usuário e autorização |
 | RF-B15 | Gerar, aprovar e baixar relatórios | Versionamento, PDF e cofre; depende da infraestrutura |
 | RF-B16 | Registrar/verificar auditoria | Cadeia de eventos e `/audit-events/verify-chain` |
-| RF-B17 | Assistência supervisionada | Estrutura parcial; integração de modelos/conclusão dos jobs pendente |
+| RF-B17 | Assistência supervisionada | Provider Ollama, JSON validado, resultado persistido, consulta de execução e revisão humana; sem modelo predefinido nem fallback cloud |
 | RF-B18 | Saúde e contrato | Health checks e OpenAPI |
 | RF-B19 | Servir a interface | Artefato gerado com apresentação pública, catálogo e painel autenticado; sem servidor Node embarcado |
-| RF-B20 | Cobrança comercial | Não implementada; a UI oferece catálogo e resumos, sem efetuar compras ou alterar saldos |
+| RF-B20 | Cobrança comercial | Checkout mensal por cartão no Asaas Sandbox; callback não confirma pagamento; carteiras e ciclo comercial de produção pendentes |
 
 O contrato exato de métodos, payloads e respostas é `/v1/openapi.json`. Implementação não equivale a homologação com serviços reais.
 
@@ -196,12 +240,12 @@ O contrato exato de métodos, payloads e respostas é `/v1/openapi.json`. Implem
 
 As capacidades da API e as ações disponíveis na UI têm escopos diferentes:
 
-- O cadastro principal de clientes/processos e as operações individuais de andamentos, prazos, agenda, intimações e financeiro usam persistência na API. O lançamento conjunto de intimação está bloqueado na UI; não há transação integrada para criar os três registros juntos.
+- O cadastro principal e o lançamento conjunto de intimação usam a API. `POST /intimations/{id}/launch` cria andamento e, opcionalmente, prazo/compromisso em uma transação. Repetição idêntica retorna os mesmos identificadores; alterações conflitantes retornam 409. Relacionamentos validam organização, existência e compatibilidade cliente/processo. Auditor não pode escrever.
 - Alterações de biografia, histórico político, patrimônio, vínculos empresariais, notícias e documentos do perfil 360° estão bloqueadas na UI. Elas não simulam gravação; a consulta ao perfil e o cadastro principal continuam disponíveis.
-- A tela Metadados e Arquivos faz apenas inspeção temporária no navegador. Não envia o arquivo ao backend nem grava vínculo com processo. O fluxo de envio de evidências existe no workspace de investigação, em `/v1/evidences/uploads`, com finalização posterior.
+- A tela Arquivos usa `/evidences`, `/evidences/uploads` e ações de finalização, eventos, verificação e download. Inspeção temporária no navegador permanece separada. Vínculo direto a processo/cliente ainda não foi implementado; a investigação pode fornecer esse contexto.
 - O frontend gera evidências de texto/JSON, mas `ALLOWED_MIME_TYPES` padrão autoriza PDF, imagens e vídeos. Esses envios são rejeitados até que a configuração seja alinhada aos formatos autorizados para o ambiente. Cofre e pipeline também precisam estar disponíveis.
-- Os motores TACER/SIERA da API são distintos dos checklists TACER e da matriz ACH locais, que desaparecem ao recarregar a página. A seção Agentes IA também exibe resultados temporários e não registra achados na investigação.
-- A tela de auditoria combina eventos persistidos do bootstrap com eventos locais da sessão. `/audit-events/verify-chain` verifica somente a cadeia mantida pelo backend.
+- Os motores TACER/SIERA da API são distintos dos checklists TACER e da matriz ACH locais, que desaparecem ao recarregar a página. A nova seção Agentes IA registra execuções no servidor; transformar uma sugestão em achado jurídico continua exigindo revisão e registro explícitos.
+- A aba Auditoria consulta eventos persistidos e `/audit-events/verify-chain`. Atividades temporárias do navegador não são apresentadas nessa aba como prova da cadeia do servidor.
 
 ## Requisitos não funcionais
 

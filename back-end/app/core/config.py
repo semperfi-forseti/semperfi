@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     smtp_security: Literal["starttls", "ssl"] = "starttls"
     smtp_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
 
+    # This integration is deliberately restricted to Asaas Sandbox.
+    asaas_sandbox_enabled: bool = False
+    asaas_sandbox_api_key: str | None = None
+    asaas_webhook_token: str | None = None
+    asaas_checkout_return_url: str | None = None
+
     s3_endpoint_url: str | None = None
     s3_region: str = "us-east-1"
     s3_access_key_id: str | None = None

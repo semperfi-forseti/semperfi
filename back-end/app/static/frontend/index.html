@@ -4,7 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="description" content="SEMPER-FI: gestão jurídica, investigações e evidências em um único espaço de trabalho.">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="dark light">
+<script src="assets/js/accessibility.js"></script>
 <title>SEMPER-FI — FORSETI Technologies ® · Aprovado ABDCRIM ®</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -12,11 +13,19 @@
 <link rel="stylesheet" href="assets/css/style.css">
 <link rel="stylesheet" href="assets/css/interface.css">
 <link rel="stylesheet" href="assets/css/commercial.css">
+<link rel="stylesheet" href="assets/css/themes.css">
+<link rel="stylesheet" href="assets/css/accessibility.css">
 <script src="assets/js/commercial.js" defer></script>
+<script src="assets/js/legal-forms.js" defer></script>
+<script src="assets/js/connector-jobs.js" defer></script>
+<script src="assets/js/audit-view.js" defer></script>
+<script src="assets/js/billing-checkout.js" defer></script>
+<script src="assets/js/integrations-view.js" defer></script>
+<script src="assets/js/calculators.js" defer></script>
 <script src="assets/js/auth.js" defer></script>
 </head>
 <body class="auth-pending" data-page="app">
-<div class="auth-gate"><span class="brand-symbol" aria-hidden="true">Σ</span><h1>SEMPER-FI</h1><p id="authStatus" role="status" aria-live="polite">Verificando sua sessão…</p><button class="btn btn-secondary" id="authRetry" hidden>Tentar novamente</button><p><a class="btn-link" href="login.html">Voltar ao acesso</a></p></div>
+<div class="auth-gate"><span class="brand-symbol" aria-hidden="true">Σ</span><h1>SEMPER-FI</h1><p id="authStatus" role="status" aria-live="polite">Verificando sua sessão…</p><button class="btn btn-secondary" id="authRetry" hidden>Tentar novamente</button><p><a class="btn-link" href="login.html">Voltar ao acesso</a></p><button class="btn btn-secondary" type="button" data-a11y-open aria-controls="a11yDialog" aria-haspopup="dialog" aria-expanded="false">Acessibilidade</button></div>
 <a class="skip-link" href="#mainContent">Pular para o conteúdo</a>
 <button class="sidebar-backdrop" id="sidebarBackdrop" aria-label="Fechar navegação" tabindex="-1"></button>
 <aside class="sidebar" id="sidebar" aria-label="Navegação principal">
@@ -33,6 +42,7 @@
       <input type="search" class="search-box" id="globalSearch" aria-label="Buscar nos registros" placeholder="Buscar cliente, processo, CPF/CNPJ…" autocomplete="off">
     </div>
     <div class="topbar-right">
+      <div class="a11y-toolbar" role="group" aria-label="Aparência e acessibilidade"><button class="btn btn-secondary" type="button" data-theme-toggle><span data-theme-icon aria-hidden="true">☀</span><span data-theme-label>Modo claro</span></button><button class="btn btn-secondary" type="button" data-a11y-open aria-controls="a11yDialog" aria-haspopup="dialog" aria-expanded="false">Acessibilidade</button></div>
       <div class="topbar-meters" id="topbarMeters"></div>
       <button class="btn-new" id="btnNew">+ Novo registro</button>
       <span class="demo-badge" title="FORSETI Technologies ® · CNPJ 66.603.219/0001-93 — Aprovado por ABDCRIM ® · CNPJ 55.739.503/0001-75">FORSETI · ABDCRIM</span>
@@ -61,7 +71,7 @@
   </main>
 </div>
 <div class="modal" id="modal" role="dialog" aria-modal="true" aria-label="Detalhes do registro"><div class="modal-content" id="modalContent" tabindex="-1"></div></div>
-<div class="toast-container" id="toastContainer" role="status" aria-live="polite"></div>
+<div class="toast-container" id="toastContainer" role="region" aria-label="Avisos do sistema"></div>
 <input type="file" id="fileImport" style="display:none" accept=".json">
 <noscript>Ative o JavaScript para acessar o SEMPER-FI.</noscript>
 </body>

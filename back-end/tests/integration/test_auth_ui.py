@@ -61,6 +61,10 @@ def test_static_entry_and_production_assets(browser_client, monkeypatch):
         "index.html", "login.html", "assets/css/interface.css", "assets/js/auth.js", "data/sources.json",
         "assets/css/commercial.css", "assets/js/commercial.js", "data/commercial.json",
         "assets/css/public.css", "assets/js/public.js",
+        "assets/css/themes.css", "assets/css/accessibility.css", "assets/js/accessibility.js",
+        "assets/js/legal-forms.js", "assets/js/connector-jobs.js", "assets/js/audit-view.js",
+        "assets/js/billing-checkout.js", "assets/js/integrations-view.js",
+        "assets/js/calculators.js",
     ):
         response = browser_client.get(f"/ui/frontend/{file}")
         assert response.status_code == 200

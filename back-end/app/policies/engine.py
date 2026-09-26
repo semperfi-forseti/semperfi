@@ -46,6 +46,20 @@ class PolicyDecision:
 class PolicyEngine:
     critical_actions = {"evidence.download", "evidence.legal_hold", "report.approve", "data.export", "retention.change"}
     investigation_actions = {"osint.run", "engine.run", "evidence.upload", "agent.run", "report.generate"}
+    legal_resources = {"client", "process", "deadline", "appointment", "intimation", "financial"}
+    legal_write_roles = {"administrator", "manager", "lawyer", "investigator", "analyst"}
+    legal_read_roles = legal_write_roles | {"auditor"}
+    legal_read_actions = {
+        f"{resource}.{operation}"
+        for resource in legal_resources
+        for operation in ("list", "read")
+    } | {"frontend.bootstrap"}
+    legal_write_actions = {
+        f"{resource}.{operation}"
+        for resource in legal_resources
+        for operation in ("create", "update", "delete")
+    } | {"process.movement.create", "process.movement.update", "process.movement.delete",
+         "intimation.launch", "frontend_demo.import"}
 
     async def evaluate(self, session: AsyncSession, principal: Principal, context: PolicyContext, correlation_id: str) -> PolicyDecision:
         decision = self._decide(principal, context)
@@ -59,6 +73,18 @@ class PolicyEngine:
         return decision
 
     def _decide(self, principal: Principal, context: PolicyContext) -> PolicyDecision:
+        # Keep the legal workspace read-only for auditors. Unknown/empty roles
+        # must not inherit the permissive fallback used by unrelated policies.
+        is_legal_action = (
+            context.action.partition(".")[0] in self.legal_resources
+            or context.action in {"frontend.bootstrap", "frontend_demo.import"}
+        )
+        if is_legal_action:
+            roles = (self.legal_read_roles if context.action in self.legal_read_actions
+                     else self.legal_write_roles if context.action in self.legal_write_actions
+                     else set())
+            if not principal.roles.intersection(roles):
+                return PolicyDecision(PolicyEffect.DENY, "RBAC_ROLE_DENIED", "Perfil não autorizado para esta operação do núcleo jurídico.")
         if context.retention_locked and context.action in {"evidence.delete", "retention.change"}:
             return PolicyDecision(PolicyEffect.RETENTION_BLOCKED, "RETENTION_LOCKED", "Evidência sujeita a retenção ou legal hold.")
         if context.has_legal_hold and context.action == "evidence.delete":

@@ -1,5 +1,6 @@
 from app.models.audit import AuditEvent, JobExecution, OutboxEvent
 from app.models.base import Base
+from app.models.billing import BillingCheckout, BillingWebhookReceipt
 from app.models.evidence import Evidence, EvidenceEvent, LegalHold, RetentionPolicy
 from app.models.investigation import (
     ConnectorRun,
@@ -37,5 +38,5 @@ __all__ = [
     "EvidenceEvent", "FinancialEntry", "Finding", "Intimation", "Investigation",
     "InvestigationScope", "JobExecution", "LegalHold", "LegalProcess", "Membership",
     "OutboxEvent", "PolicyEvaluation", "ProcessMovement", "Report", "RetentionPolicy",
-    "RiskAssessment", "Tenant", "TimelineEvent", "User",
+    "RiskAssessment", "Tenant", "TimelineEvent", "User", "BillingCheckout", "BillingWebhookReceipt",
 ]

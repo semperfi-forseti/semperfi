@@ -6,6 +6,14 @@ const {spawnSync} = require('node:child_process');
 const vm = require('node:vm');
 const source = readFileSync(join(__dirname, '../assets/js/app.js'), 'utf8');
 
+test('CSV export preserves Portuguese, quotes and line breaks without executing spreadsheet formulas', () => {
+  const context = vm.createContext({});
+  vm.runInContext(source.slice(source.indexOf('function csvCell('), source.indexOf('function exportCSV(')), context);
+  assert.equal(context.csvCell('Créditos "mensais"\nR$ 50'), '"Créditos ""mensais""\nR$ 50"');
+  for (const value of ['=1+1', '+CMD', '-1+2', '@SUM(A1)', '\t=1']) assert.equal(context.csvCell(value), `"'${value}"`);
+  assert.equal(context.csvCell(0), '"0"');
+});
+
 test('calendar dates keep the local day at night and round-trip date inputs', () => {
   const helpers = source.slice(source.indexOf('function toISO('), source.indexOf('function fmtDate('));
   const result = spawnSync(process.execPath, ['-e', `${helpers}

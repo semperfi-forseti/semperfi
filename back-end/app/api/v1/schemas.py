@@ -5,7 +5,7 @@ from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ORMModel(BaseModel):
@@ -101,14 +101,60 @@ class IntimationCreate(BaseModel):
 
 
 class FinancialEntryCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
     entry_date: date
     entry_type: Literal["revenue", "expense"]
-    description: str
-    amount: Decimal
-    status: str
-    category: str | None = None
+    description: str = Field(min_length=2, max_length=255)
+    amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2, allow_inf_nan=False)
+    status: Literal["forecast", "overdue", "received", "paid"]
+    category: str | None = Field(default=None, max_length=64)
     client_id: uuid.UUID | None = None
     process_id: uuid.UUID | None = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_status(cls, value):
+        aliases = {"previsto": "forecast", "vencido": "overdue", "recebido": "received", "pago": "paid"}
+        return aliases.get(value, value) if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def validate_settlement(self):
+        if (self.entry_type == "revenue" and self.status == "paid") or (self.entry_type == "expense" and self.status == "received"):
+            raise ValueError("Use recebido para receita e pago para despesa.")
+        return self
+
+
+class IntimationLaunchMovement(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    occurred_on: date
+    movement_type: str = Field(default="intimacao", min_length=2, max_length=64)
+    description: str = Field(min_length=3)
+
+
+class IntimationLaunchDeadline(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    title: str = Field(min_length=2, max_length=255)
+    due_date: date
+    deadline_type: str = Field(default="manifestation", min_length=2, max_length=64)
+    responsible: str | None = Field(default=None, max_length=160)
+    notes: str | None = None
+
+
+class IntimationLaunchAppointment(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    title: str = Field(min_length=2, max_length=255)
+    appointment_date: date
+    appointment_time: time | None = None
+    appointment_type: str = Field(default="meeting", min_length=2, max_length=64)
+    location: str | None = Field(default=None, max_length=255)
+    notes: str | None = None
+
+
+class IntimationLaunch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    movement: IntimationLaunchMovement
+    deadline: IntimationLaunchDeadline | None = None
+    appointment: IntimationLaunchAppointment | None = None
 
 
 class InvestigationCreate(BaseModel):
@@ -131,11 +177,17 @@ class InvestigationStatusUpdate(BaseModel):
     status: str = Field(min_length=3, max_length=64)
 
 
+class EntityIdentifierCreate(BaseModel):
+    type: str = Field(default="generic", min_length=1, max_length=64)
+    value: str = Field(min_length=1, max_length=2048)
+    primary: bool = False
+
+
 class EntityCreate(BaseModel):
     entity_type: Literal["person", "company", "process", "domain", "address", "phone", "bank", "document", "web_page", "municipality"]
     display_name: str
     normalized_name: str | None = None
-    identifiers: list[dict[str, str]] = Field(default_factory=list)
+    identifiers: list[EntityIdentifierCreate] = Field(default_factory=list, max_length=30)
     verification_status: str = "preliminary"
     confidence: float = Field(default=0.0, ge=0, le=1)
     notes: str | None = None

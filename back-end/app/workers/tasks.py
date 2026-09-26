@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import uuid
 from datetime import UTC, datetime
 
@@ -40,8 +38,11 @@ async def _verify_stored_evidence(evidence_id: str, expected_hash: str) -> dict:
 
 
 @celery_app.task(name="app.workers.tasks.run_supervised_agent")
-def run_supervised_agent(agent_run_id: str, agent_type: str) -> dict:
-    return {"agent_run_id": agent_run_id, "agent_type": agent_type, "status": "pending_human_review", "limitations": ["Nenhuma conclusão jurídica autônoma é produzida."], "output_hash": hashlib.sha256(json.dumps({"id": agent_run_id, "type": agent_type}).encode()).hexdigest()}
+def run_supervised_agent(agent_run_id: str, agent_type: str, tenant_id: str | None = None) -> dict:
+    from app.services.agent_runs import execute_agent_run_sync
+    if not tenant_id:
+        return {"agent_run_id": agent_run_id, "status": "failed", "error_code": "TENANT_CONTEXT_REQUIRED"}
+    return execute_agent_run_sync(agent_run_id, tenant_id)
 
 
 @celery_app.task(name="app.workers.tasks.dispatch_outbox_events")

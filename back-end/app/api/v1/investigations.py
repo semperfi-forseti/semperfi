@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import correlation_id
+from app.api.v1.legal import _validate_links
 from app.api.v1.schemas import (
     ConnectorRunCreate,
     EntityCreate,
@@ -31,6 +32,7 @@ from app.models import (
 )
 from app.policies import PolicyContext, PolicyEffect, policy_engine
 from app.security import Principal, cipher, get_current_principal, rate_limiter
+from app.services.agent_runs import validate_references
 from app.services.connector_runs import execute_connector_run, request_hash
 from app.services.outbox import enqueue_outbox
 
@@ -39,16 +41,59 @@ settings = get_settings()
 
 
 async def _decision(session: AsyncSession, principal: Principal, request: Request, context: PolicyContext):
+    if context.action.rsplit(".", 1)[-1] in {"create", "update", "delete"} and not principal.has_any_role("administrator", "manager", "lawyer", "investigator", "analyst"):
+        raise HTTPException(status_code=403, detail="Perfil não autorizado para alterar investigações.")
     cid = correlation_id(request); decision = await policy_engine.evaluate(session, principal, context, cid)
     if decision.effect == PolicyEffect.DENY: raise HTTPException(status_code=403, detail={"policy_code": decision.code, "reason": decision.reason})
     if decision.effect == PolicyEffect.REQUIRE_MFA: raise HTTPException(status_code=403, detail={"policy_code": decision.code, "reason": decision.reason})
+    if decision.effect == PolicyEffect.RATE_LIMITED: raise HTTPException(status_code=429, detail={"policy_code": decision.code, "reason": decision.reason})
     return cid, decision
 
 
 async def _investigation(session: AsyncSession, tenant_id: uuid.UUID, investigation_id: uuid.UUID) -> Investigation:
-    item = await session.scalar(select(Investigation).where(Investigation.id == investigation_id, Investigation.tenant_id == tenant_id))
+    item = await session.scalar(select(Investigation).where(Investigation.id == investigation_id, Investigation.tenant_id == tenant_id, Investigation.status != "deleted"))
     if not item: raise HTTPException(status_code=404, detail="Investigação não encontrada.")
     return item
+
+
+async def _entity(session: AsyncSession, tenant_id: uuid.UUID, investigation_id: uuid.UUID, entity_id: uuid.UUID) -> Entity:
+    item = await session.scalar(select(Entity).where(Entity.id == entity_id, Entity.tenant_id == tenant_id,
+        Entity.investigation_id == investigation_id, Entity.verification_status != "deleted"))
+    if not item:
+        raise HTTPException(status_code=404, detail="Alvo não encontrado nesta investigação.")
+    return item
+
+
+async def _target_payload(session: AsyncSession, tenant_id: uuid.UUID, body: ConnectorRunCreate) -> dict:
+    payload = dict(body.payload)
+    if not body.target_entity_id:
+        return payload
+    if not body.investigation_id:
+        raise HTTPException(status_code=422, detail="Informe a investigação do alvo selecionado.")
+    entity = await _entity(session, tenant_id, body.investigation_id, body.target_entity_id)
+    options = {
+        "brasilapi": ({"company"}, {"document", "cnpj"}, "value"),
+        "datajud": ({"process"}, {"document", "process_number", "cnj"}, "process_number"),
+        "rdap_dns": ({"domain"}, {"document", "domain"}, "domain"),
+        "transparency": ({"person", "company"}, {"document", "cpf", "cnpj"}, "document"),
+    }
+    types, identifier_types, field = options[body.connector_id]
+    if entity.entity_type not in types or (body.connector_id == "brasilapi" and payload.get("kind", "cnpj") != "cnpj"):
+        raise HTTPException(status_code=422, detail="O tipo de alvo não é compatível com este conector.")
+    identifier = await session.scalar(select(EntityIdentifier).where(EntityIdentifier.entity_id == entity.id,
+        EntityIdentifier.identifier_type.in_(identifier_types)).order_by(EntityIdentifier.is_primary.desc(), EntityIdentifier.created_at.desc()).limit(1))
+    if not identifier:
+        raise HTTPException(status_code=422, detail="Cadastre o identificador do alvo antes de consultar esta fonte.")
+    try:
+        value = cipher.decrypt(identifier.value_ciphertext)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="O identificador protegido está indisponível.") from exc
+    if not value or not value.strip():
+        raise HTTPException(status_code=422, detail="O alvo não possui um identificador válido.")
+    payload[field] = value.strip()
+    if body.connector_id == "brasilapi": payload["kind"] = "cnpj"
+    if body.connector_id == "transparency": payload.pop("name", None)
+    return payload
 
 
 def _serialize_finding(item: Finding) -> dict:
@@ -110,6 +155,7 @@ async def list_investigations(request: Request, session: AsyncSession = Depends(
 @router.post("/investigations", status_code=status.HTTP_201_CREATED)
 async def create_investigation(body: InvestigationCreate, request: Request, session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
     cid, decision = await _decision(session, principal, request, PolicyContext(action="investigation.create", purpose=body.purpose, legal_basis=body.legal_basis, authorization_reference=body.authorization_reference, risk_level=body.risk_level, scope_codes=set(body.scope_codes)))
+    await _validate_links(session, principal.tenant_id, body.client_id, body.process_id)
     item = Investigation(tenant_id=principal.tenant_id, owner_id=principal.user_id, title=body.title, category=body.category, objective=body.objective, hypothesis=body.hypothesis, purpose=body.purpose, legal_basis=body.legal_basis, authorization_reference=body.authorization_reference, proportionality_assessment=body.proportionality_assessment, risk_level=body.risk_level, client_id=body.client_id, process_id=body.process_id, retention_until=body.retention_until, status="aguardando_aprovacao" if decision.effect == PolicyEffect.REQUIRE_APPROVAL else "em_coleta")
     session.add(item); await session.flush()
     for scope in body.scope_codes: session.add(InvestigationScope(investigation_id=item.id, scope_code=scope, approved=decision.effect == PolicyEffect.ALLOW))
@@ -132,9 +178,8 @@ async def create_entity(investigation_id: uuid.UUID, body: EntityCreate, request
     entity = Entity(tenant_id=principal.tenant_id, investigation_id=investigation_id, entity_type=body.entity_type, display_name=body.display_name, normalized_name=body.normalized_name, verification_status=body.verification_status, confidence=body.confidence, notes=body.notes)
     session.add(entity); await session.flush()
     for identifier in body.identifiers:
-        value = identifier.get("value", "")
-        if not value: continue
-        session.add(EntityIdentifier(entity_id=entity.id, identifier_type=identifier.get("type", "generic"), value_ciphertext=cipher.encrypt(value) or "", value_fingerprint=cipher.fingerprint(value) or "", is_primary=bool(identifier.get("primary", False))))
+        value = identifier.value
+        session.add(EntityIdentifier(entity_id=entity.id, identifier_type=identifier.type, value_ciphertext=cipher.encrypt(value) or "", value_fingerprint=cipher.fingerprint(value) or "", is_primary=identifier.primary))
     await append_audit(session, principal, request, action="entity.create", resource_type="entity", resource_id=entity.id, correlation_id=cid)
     await session.commit()
     return {"id": entity.id, "verification_status": entity.verification_status, "confidence": entity.confidence}
@@ -143,6 +188,8 @@ async def create_entity(investigation_id: uuid.UUID, body: EntityCreate, request
 @router.post("/investigations/{investigation_id}/relations", status_code=status.HTTP_201_CREATED)
 async def create_relation(investigation_id: uuid.UUID, body: RelationCreate, request: Request, session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
     cid, _ = await _decision(session, principal, request, PolicyContext(action="relation.create")); await _investigation(session, principal.tenant_id, investigation_id)
+    await _entity(session, principal.tenant_id, investigation_id, body.source_entity_id)
+    await _entity(session, principal.tenant_id, investigation_id, body.target_entity_id)
     relation = EntityRelation(tenant_id=principal.tenant_id, investigation_id=investigation_id, **body.model_dump(), human_validated=False)
     session.add(relation); await session.flush(); await append_audit(session, principal, request, action="relation.create", resource_type="entity_relation", resource_id=relation.id, correlation_id=cid, metadata_safe={"confidence": body.confidence}); await session.commit(); return {"id": relation.id, "human_validated": False}
 
@@ -184,6 +231,8 @@ async def delete_entity(investigation_id: uuid.UUID, entity_id: uuid.UUID, reque
 async def create_finding(investigation_id: uuid.UUID, body: FindingCreate, request: Request, session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
     cid, _ = await _decision(session, principal, request, PolicyContext(action="finding.create"))
     await _investigation(session, principal.tenant_id, investigation_id)
+    await validate_references(session, principal.tenant_id, investigation_id, [body.evidence_id] if body.evidence_id else [])
+    if body.entity_id: await _entity(session, principal.tenant_id, investigation_id, body.entity_id)
     item = Finding(tenant_id=principal.tenant_id, investigation_id=investigation_id, **body.model_dump())
     session.add(item)
     await session.flush()
@@ -199,6 +248,9 @@ async def update_finding(finding_id: uuid.UUID, body: FindingUpdate, request: Re
     if not item:
         raise HTTPException(status_code=404, detail="Achado não encontrado.")
     patch = body.model_dump(exclude_unset=True)
+    evidence_id = patch.get("evidence_id", item.evidence_id)
+    await validate_references(session, principal.tenant_id, item.investigation_id, [evidence_id] if evidence_id else [])
+    if item.entity_id: await _entity(session, principal.tenant_id, item.investigation_id, item.entity_id)
     for key, value in patch.items():
         setattr(item, key, value)
     await append_audit(session, principal, request, action="finding.update", resource_type="finding", resource_id=item.id, correlation_id=cid, metadata_safe={"human_validated": item.human_validated, "reviewer_name": principal.display_name if item.human_validated else None})
@@ -218,8 +270,8 @@ async def create_connector_run(body: ConnectorRunCreate, request: Request, wait:
     cid, decision = await _decision(session, principal, request, context)
     if decision.effect == PolicyEffect.REQUIRE_APPROVAL:
         raise HTTPException(status_code=202, detail={"policy_code": decision.code, "reason": decision.reason, "status": "approval_required"})
-    if body.investigation_id: await _investigation(session, principal.tenant_id, body.investigation_id)
-    payload = {**body.payload, "authorization_reference": body.authorization_reference, "scope_codes": body.scope_codes}
+    await validate_references(session, principal.tenant_id, body.investigation_id, [])
+    payload = {**(await _target_payload(session, principal.tenant_id, body)), "authorization_reference": body.authorization_reference, "scope_codes": body.scope_codes}
     run = ConnectorRun(tenant_id=principal.tenant_id, investigation_id=body.investigation_id, target_entity_id=body.target_entity_id, connector_id=body.connector_id, status="queued", purpose=body.purpose, correlation_id=cid, request_hash=request_hash(payload), request_payload=payload)
     session.add(run); await session.flush()
     run.job_id = str(uuid.uuid4())

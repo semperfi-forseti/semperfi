@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.legal import _policy
 from app.audit import append_audit
 from app.db import get_db
 from app.models import (
@@ -125,6 +126,7 @@ def _resource_key(value: Any) -> str | None:
 
 @router.get("/frontend/bootstrap")
 async def frontend_bootstrap(request: Request, session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
+    await _policy(session, principal, request, "frontend.bootstrap")
     clients = list((await session.scalars(select(Client).where(Client.tenant_id == principal.tenant_id, Client.deleted_at.is_(None)).order_by(Client.name))).all())
     processes = list((await session.scalars(select(LegalProcess).where(LegalProcess.tenant_id == principal.tenant_id, LegalProcess.deleted_at.is_(None)).order_by(LegalProcess.number))).all())
     deadlines = list((await session.scalars(select(Deadline).where(Deadline.tenant_id == principal.tenant_id, Deadline.deleted_at.is_(None)).order_by(Deadline.due_date))).all())
@@ -252,7 +254,7 @@ async def frontend_bootstrap(request: Request, session: AsyncSession = Depends(g
                     "phase": item.phase,
                     "responsible": item.responsible,
                     "value": _to_float(item.claim_value),
-                    "status": item.status,
+                    "status": _map_status(item.status, {"active": "ativo", "critical": "critico", "archived": "arquivado"}),
                     "notes": item.notes,
                     "createdAt": item.created_at.isoformat(),
                 }
@@ -283,7 +285,7 @@ async def frontend_bootstrap(request: Request, session: AsyncSession = Depends(g
                     "processId": str(item.process_id) if item.process_id else None,
                     "location": item.location,
                     "notes": item.notes,
-                    "status": _map_status(item.status, {"confirmed": "confirmado", "pending": "pendente"}),
+                    "status": _map_status(item.status, {"confirmed": "confirmado", "pending": "pendente", "completed": "concluido", "cancelled": "cancelado", "canceled": "cancelado"}),
                     "createdAt": item.created_at.isoformat(),
                 }
                 for item in appointments
@@ -312,7 +314,7 @@ async def frontend_bootstrap(request: Request, session: AsyncSession = Depends(g
                     "processId": str(item.process_id) if item.process_id else None,
                     "category": item.category,
                     "amount": _to_float(item.amount),
-                    "status": _map_status(item.status, {"paid": "pago", "received": "recebido", "forecast": "previsto"}),
+                    "status": _map_status(item.status, {"paid": "pago", "received": "recebido", "forecast": "previsto", "overdue": "vencido"}),
                     "createdAt": item.created_at.isoformat(),
                 }
                 for item in financial_entries
@@ -327,6 +329,7 @@ async def frontend_bootstrap(request: Request, session: AsyncSession = Depends(g
                     "source": item.source,
                     "authorId": user_map.get(item.created_by, principal.display_name if item.created_by == principal.user_id else "Sistema"),
                     "attachments": [],
+                    "intimationId": (item.payload or {}).get("intimationId"),
                     "createdAt": item.created_at.isoformat(),
                     "payload": item.payload,
                 }
