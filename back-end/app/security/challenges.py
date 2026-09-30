@@ -7,7 +7,7 @@ import secrets
 import time
 import uuid
 
-from fastapi import HTTPException, Request, Response
+from fastapi import BackgroundTasks, HTTPException, Request, Response
 from sqlalchemy import case, delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,7 +52,8 @@ def metadata(challenge: AuthenticationChallenge) -> dict:
         "expires_in": max(0, challenge.expires_at - now),
         "resend_after": max(0, challenge.resend_at - now),
         "account_type": challenge.account_type,
-        "delivery_failed": challenge.delivery_state == "failed",
+        # Recovery must not disclose whether a mailbox belongs to an account.
+        "delivery_failed": challenge.delivery_state == "failed" and challenge.purpose != "reset",
     }
 
 
@@ -125,9 +126,9 @@ async def _deliver(session: AsyncSession, challenge: AuthenticationChallenge, co
 
 
 async def begin(session: AsyncSession, response: Response, *, purpose: str, email: str,
-                account_type: str | None, password_hash: str, display_name: str | None = None,
+                account_type: str | None, password_hash: str | None, display_name: str | None = None,
                 organization_name: str | None = None, user_id: uuid.UUID | None = None,
-                tenant_id: uuid.UUID | None = None) -> dict:
+                tenant_id: uuid.UUID | None = None, background: BackgroundTasks | None = None) -> dict:
     settings = get_settings()
     _signing_key()  # Fail before persisting or sending without a stable production key.
     now = int(time.time())
@@ -162,12 +163,45 @@ async def begin(session: AsyncSession, response: Response, *, purpose: str, emai
         await session.rollback()
         raise HTTPException(status_code=429, detail="Aguarde antes de solicitar outro código.",
                             headers={"Retry-After": str(settings.auth_otp_cooldown_seconds)}) from exc
-    await _deliver(session, challenge, code, initial=True)
+    if purpose == "reset" and background is not None:
+        background.add_task(_deliver_recovery, challenge.id, challenge.version, code)
+    else:
+        await _deliver(session, challenge, code, initial=True)
     set_challenge_cookie(response, token)
     return pending_response(challenge)
 
 
-async def resend(session: AsyncSession, request: Request, response: Response) -> dict:
+async def _deliver_recovery(challenge_id: uuid.UUID, version: int, code: str) -> None:
+    """Send after the response, without tying response timing to account existence.
+
+    Recovery uses the same persisted retry/expiry controls for unknown addresses,
+    but never sends mail to them. SMTP failures do not change the public response.
+    """
+    from app.db import SessionLocal
+
+    async with SessionLocal() as session:
+        challenge = await session.get(AuthenticationChallenge, challenge_id)
+        if not challenge or challenge.version != version or not _active(challenge, int(time.time())):
+            return
+        if challenge.user_id is None:
+            await session.execute(update(AuthenticationChallenge).where(
+                *_scope(challenge, int(time.time())), AuthenticationChallenge.delivery_state == "pending",
+            ).values(delivery_state="sent"))
+            await session.commit()
+            return
+        try:
+            await _deliver(session, challenge, code, initial=False)
+        except HTTPException:
+            # Keep public attempts/expiry behavior identical to a decoy even
+            # when SMTP failed; the undisclosed code cannot grant access.
+            await session.execute(update(AuthenticationChallenge).where(
+                *_scope(challenge, int(time.time())), AuthenticationChallenge.delivery_state == "failed",
+            ).values(delivery_state="sent"))
+            await session.commit()
+
+
+async def resend(session: AsyncSession, request: Request, response: Response,
+                 background: BackgroundTasks | None = None) -> dict:
     challenge = await pending(session, request)
     if not challenge:
         raise HTTPException(status_code=400, detail=_INVALID_CODE)
@@ -190,16 +224,21 @@ async def resend(session: AsyncSession, request: Request, response: Response) ->
         raise HTTPException(status_code=429, detail="Um código já está sendo enviado. Aguarde para tentar novamente.")
     await session.commit()
     await session.refresh(challenge)
-    await _deliver(session, challenge, code, initial=False)
+    if challenge.purpose == "reset" and background is not None:
+        background.add_task(_deliver_recovery, challenge.id, challenge.version, code)
+    else:
+        await _deliver(session, challenge, code, initial=False)
     set_challenge_cookie(response, request.cookies[settings.challenge_cookie_name])
     return pending_response(challenge)
 
 
-async def claim(session: AsyncSession, request: Request, code: str) -> AuthenticationChallenge:
+async def claim(session: AsyncSession, request: Request, code: str, *, purpose: str | None = None) -> AuthenticationChallenge:
     """Claim in the caller's transaction; identity creation and consumption commit together."""
     challenge = await pending(session, request)
     now = int(time.time())
-    if not challenge or challenge.delivery_state != "sent":
+    if (not challenge or (purpose != "reset" and challenge.delivery_state != "sent")
+            or (purpose is not None and challenge.purpose != purpose)
+            or (purpose is None and challenge.purpose not in {"register", "login"})):
         raise HTTPException(status_code=400, detail=_INVALID_CODE)
     valid = hmac.compare_digest(_code_hash(challenge.id, challenge.version, code), challenge.code_hash)
     max_attempts = get_settings().auth_otp_max_attempts
@@ -210,7 +249,11 @@ async def claim(session: AsyncSession, request: Request, code: str) -> Authentic
         values["consumed_at"] = case((AuthenticationChallenge.attempts >= max_attempts - 1, now), else_=None)
         values["password_hash"] = case((AuthenticationChallenge.attempts >= max_attempts - 1, None), else_=AuthenticationChallenge.password_hash)
     result = await session.execute(update(AuthenticationChallenge).where(
-        *_scope(challenge, now), AuthenticationChallenge.delivery_state == "sent",
+        *_scope(challenge, now),
+        # Recovery attempts behave identically while delivery is pending,
+        # unavailable or skipped for an unknown account. Otherwise probing
+        # attempt exhaustion could reveal whether SMTP was actually used.
+        AuthenticationChallenge.purpose == "reset" if purpose == "reset" else AuthenticationChallenge.delivery_state == "sent",
     ).values(**values).execution_options(synchronize_session=False))
     if result.rowcount != 1:
         await session.rollback()

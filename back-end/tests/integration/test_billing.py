@@ -132,6 +132,26 @@ def test_checkout_requires_authenticated_administrator_and_recent_mfa(billing_cl
     assert billing_client.get("/v1/billing/status").status_code == 401
 
 
+@pytest.mark.parametrize("role", ["lawyer", "auditor", "analyst"])
+def test_checkout_links_and_internal_ids_are_restricted_by_server(billing_client, monkeypatch, role):
+    item, _, _ = create(billing_client, monkeypatch)
+    response = billing_client.get("/v1/billing/status", headers={"X-Semperfi-Roles": role})
+    assert response.status_code == 200
+    snapshot = response.json()
+    assert snapshot["can_manage"] is False
+    assert snapshot["can_checkout"] is False
+    row = snapshot["checkouts"][0]
+    assert row["plan_key"] == item["plan_key"]
+    assert row["status"] == "open"
+    assert "checkout_url" not in row
+    assert "id" not in row
+    assert "request_id" not in row
+    assert item["checkout_url"] not in response.text
+    detail = f"/v1/billing/checkouts/{item['id']}"
+    assert billing_client.get(detail, headers={"X-Semperfi-Roles": role}).status_code == 403
+    assert billing_client.get(detail).json()["checkout_url"] == item["checkout_url"]
+
+
 def test_tenant_isolation_for_history_detail_and_request_id(billing_client, monkeypatch):
     item, body, _ = create(billing_client, monkeypatch)
     other_headers = {"X-Semperfi-Tenant-Id": str(uuid4())}

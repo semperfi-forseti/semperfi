@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import uuid
+from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,12 +36,15 @@ from app.security import Principal, cipher, get_current_principal, rate_limiter
 from app.services.agent_runs import validate_references
 from app.services.connector_runs import execute_connector_run, request_hash
 from app.services.outbox import enqueue_outbox
+from app.services.worker_context import set_worker_tenant_context
 
 router = APIRouter(tags=["Investigations and OSINT"])
 settings = get_settings()
 
 
 async def _decision(session: AsyncSession, principal: Principal, request: Request, context: PolicyContext):
+    if context.action == "osint.run.read" and not principal.has_any_role("administrator", "manager", "lawyer", "investigator", "analyst", "auditor"):
+        raise HTTPException(status_code=403, detail="Perfil não autorizado para consultar o histórico de pesquisas.")
     if context.action.rsplit(".", 1)[-1] in {"create", "update", "delete"} and not principal.has_any_role("administrator", "manager", "lawyer", "investigator", "analyst"):
         raise HTTPException(status_code=403, detail="Perfil não autorizado para alterar investigações.")
     cid = correlation_id(request); decision = await policy_engine.evaluate(session, principal, context, cid)
@@ -280,7 +284,8 @@ async def create_connector_run(body: ConnectorRunCreate, request: Request, wait:
     await append_audit(session, principal, request, action="osint.run.queue", resource_type="connector_run", resource_id=run.id, correlation_id=cid, metadata_safe={"connector_id": body.connector_id})
     await session.commit()
     if wait and settings.environment in {"development", "test"}:
-        await execute_connector_run(str(run.id))
+        await execute_connector_run(str(run.id), str(principal.tenant_id))
+        await set_worker_tenant_context(session, principal.tenant_id)
         await session.refresh(run)
         return {
             "run_id": run.id,
@@ -292,6 +297,33 @@ async def create_connector_run(body: ConnectorRunCreate, request: Request, wait:
             "limitations": run.limitations,
         }
     return {"run_id": run.id, "job_id": run.job_id, "status": run.status, "correlation_id": cid}
+
+
+@router.get("/osint/runs")
+async def list_connector_runs(
+    request: Request,
+    connector_id: Literal["brasilapi", "transparency", "datajud", "rdap_dns"] | None = None,
+    kind: Literal["cnpj", "cep", "ddd", "bank", "holidays"] | None = None,
+    limit: int = Query(default=50, ge=1, le=100),
+    session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal),
+):
+    cid, _ = await _decision(session, principal, request, PolicyContext(action="osint.run.read"))
+    statement = select(ConnectorRun).where(ConnectorRun.tenant_id == principal.tenant_id)
+    if connector_id is not None:
+        statement = statement.where(ConnectorRun.connector_id == connector_id)
+    if kind is not None:
+        statement = statement.where(ConnectorRun.request_payload["kind"].as_string() == kind)
+    rows = list((await session.scalars(statement.order_by(ConnectorRun.created_at.desc(), ConnectorRun.id.desc()).limit(limit))).all())
+    # Summaries omit request payloads, authorization references and raw snapshots.
+    # Authorized users open the existing detail route to inspect a saved result.
+    result = [{"id": row.id, "connector_id": row.connector_id, "status": row.status,
+               "purpose": row.purpose, "created_at": row.created_at,
+               "normalized_result": row.normalized_result, "limitations": row.limitations}
+              for row in rows]
+    await append_audit(session, principal, request, action="osint.run.list", resource_type="connector_run",
+                       resource_id=None, correlation_id=cid, metadata_safe={"connector_id": connector_id, "kind": kind, "count": len(rows)})
+    await session.commit()
+    return result
 
 
 @router.get("/osint/runs/{run_id}")

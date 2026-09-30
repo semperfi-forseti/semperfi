@@ -28,9 +28,11 @@ from app.models import (
     Deadline,
     FinancialEntry,
     Intimation,
+    Investigation,
     LegalProcess,
     ProcessMovement,
 )
+from app.models.legal_document import LegalDocumentLink
 from app.policies import PolicyContext, policy_engine
 from app.security import Principal, cipher, get_current_principal
 
@@ -57,8 +59,14 @@ async def _record(session: AsyncSession, principal: Principal, request: Request,
     await append_audit(session, principal, request, action=action, resource_type=resource, resource_id=resource_id, correlation_id=cid)
 
 
-async def _get(session: AsyncSession, model: type[T], tenant_id: uuid.UUID, item_id: uuid.UUID) -> T:
-    item = await session.scalar(select(model).where(model.id == item_id, model.tenant_id == tenant_id, model.deleted_at.is_(None)))
+async def _get(
+    session: AsyncSession, model: type[T], tenant_id: uuid.UUID,
+    item_id: uuid.UUID, *, lock: bool = False,
+) -> T:
+    statement = select(model).where(model.id == item_id, model.tenant_id == tenant_id, model.deleted_at.is_(None))
+    if lock:
+        statement = statement.with_for_update()
+    item = await session.scalar(statement)
     if not item:
         raise HTTPException(status_code=404, detail="Registro não encontrado.")
     return item
@@ -69,12 +77,50 @@ async def _validate_links(
     client_id: uuid.UUID | None = None, process_id: uuid.UUID | None = None,
 ) -> LegalProcess | None:
     """A foreign key alone does not establish tenant ownership or active state."""
-    if client_id is not None:
-        await _get(session, Client, tenant_id, client_id)
-    process = await _get(session, LegalProcess, tenant_id, process_id) if process_id else None
+    # Writers lock the process before its client, matching process updates. Parent
+    # removal and reassignment therefore cannot race a new link in PostgreSQL.
+    process = await _get(session, LegalProcess, tenant_id, process_id, lock=True) if process_id else None
+    linked_client_id = client_id if client_id is not None else process.client_id if process else None
+    if linked_client_id is not None:
+        await _get(session, Client, tenant_id, linked_client_id, lock=True)
     if process and client_id is not None and process.client_id != client_id:
         raise HTTPException(status_code=422, detail="O processo selecionado não pertence ao cliente informado.")
     return process
+
+
+async def _linked_records(
+    session: AsyncSession, tenant_id: uuid.UUID, item_id: uuid.UUID,
+    field: str, models: tuple[tuple[type, str], ...],
+    *, incompatible_client_id: uuid.UUID | None = None,
+) -> list[str]:
+    """Describe dependencies without returning another tenant's data or deleting history."""
+    found = []
+    for model, label in models:
+        statement = select(model.id).where(
+            model.tenant_id == tenant_id, getattr(model, field) == item_id,
+        )
+        if hasattr(model, "deleted_at"):
+            statement = statement.where(model.deleted_at.is_(None))
+        if incompatible_client_id is not None:
+            statement = statement.where(
+                model.client_id.is_not(None), model.client_id != incompatible_client_id,
+            )
+        if await session.scalar(statement.limit(1)):
+            found.append(label)
+    return found
+
+
+CLIENT_DEPENDENCIES = (
+    (LegalDocumentLink, "documentos"),
+    (LegalProcess, "processos"), (Appointment, "compromissos"),
+    (FinancialEntry, "lançamentos financeiros"), (Investigation, "investigações"),
+)
+PROCESS_DEPENDENCIES = (
+    (LegalDocumentLink, "documentos"),
+    (ProcessMovement, "movimentações"), (Deadline, "prazos"),
+    (Appointment, "compromissos"), (Intimation, "intimações"),
+    (FinancialEntry, "lançamentos financeiros"), (Investigation, "investigações"),
+)
 
 
 @router.get("/clients", response_model=list[ClientRead])
@@ -93,8 +139,11 @@ async def create_client(
 ):
     cid = await _policy(session, principal, request, "client.create")
     item = Client(tenant_id=principal.tenant_id, created_by=principal.user_id, updated_by=principal.user_id, kind=body.kind, name=body.name, document_ciphertext=cipher.encrypt(body.document), document_fingerprint=cipher.fingerprint(body.document), email_ciphertext=cipher.encrypt(body.email), phone_ciphertext=cipher.encrypt(body.phone), address_ciphertext=cipher.encrypt(body.address), responsible=body.responsible, status=body.status, notes=body.notes)
-    session.add(item); await session.flush(); await _record(session, principal, request, "client.create", "client", item.id, cid); await session.commit(); await session.refresh(item)
-    return ClientRead(id=item.id, kind=item.kind, name=item.name, document_masked=_mask_document(body.document), responsible=item.responsible, status=item.status, created_at=item.created_at)
+    session.add(item); await session.flush(); await _record(session, principal, request, "client.create", "client", item.id, cid)
+    await session.refresh(item)
+    result = ClientRead(id=item.id, kind=item.kind, name=item.name, document_masked=_mask_document(body.document), responsible=item.responsible, status=item.status, created_at=item.created_at)
+    await session.commit()
+    return result
 
 
 @router.get("/clients/{client_id}")
@@ -116,9 +165,10 @@ async def update_client(client_id: uuid.UUID, body: ClientCreate, request: Reque
 
 @router.delete("/clients/{client_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_client(client_id: uuid.UUID, request: Request, session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
-    cid = await _policy(session, principal, request, "client.delete"); item = await _get(session, Client, principal.tenant_id, client_id)
-    has_process = await session.scalar(select(LegalProcess.id).where(LegalProcess.client_id == item.id, LegalProcess.tenant_id == principal.tenant_id, LegalProcess.deleted_at.is_(None)).limit(1))
-    if has_process: raise HTTPException(status_code=409, detail="Cliente possui processos ativos e não pode ser excluído.")
+    cid = await _policy(session, principal, request, "client.delete"); item = await _get(session, Client, principal.tenant_id, client_id, lock=True)
+    dependencies = await _linked_records(session, principal.tenant_id, item.id, "client_id", CLIENT_DEPENDENCIES)
+    if dependencies:
+        raise HTTPException(status_code=409, detail=f"Cliente possui registros vinculados: {', '.join(dependencies)}. Revise os vínculos antes de excluir ou altere o status do cliente para preservar o histórico.")
     item.deleted_at, item.deleted_by, item.deletion_reason = datetime.now(UTC), principal.user_id, "Solicitação de usuário"
     await _record(session, principal, request, "client.delete", "client", item.id, cid); await session.commit()
 
@@ -133,10 +183,13 @@ async def list_processes(request: Request, session: AsyncSession = Depends(get_d
 
 @router.post("/processes", response_model=ProcessRead, status_code=status.HTTP_201_CREATED)
 async def create_process(body: ProcessCreate, request: Request, session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
-    cid = await _policy(session, principal, request, "process.create"); await _get(session, Client, principal.tenant_id, body.client_id)
+    cid = await _policy(session, principal, request, "process.create"); await _validate_links(session, principal.tenant_id, client_id=body.client_id)
     item = LegalProcess(tenant_id=principal.tenant_id, created_by=principal.user_id, updated_by=principal.user_id, **body.model_dump())
-    session.add(item); await session.flush(); await _record(session, principal, request, "process.create", "process", item.id, cid); await session.commit(); await session.refresh(item)
-    return ProcessRead.model_validate(item)
+    session.add(item); await session.flush(); await _record(session, principal, request, "process.create", "process", item.id, cid)
+    await session.refresh(item)
+    result = ProcessRead.model_validate(item)
+    await session.commit()
+    return result
 
 
 @router.get("/processes/{process_id}")
@@ -150,7 +203,7 @@ async def get_process(process_id: uuid.UUID, request: Request, session: AsyncSes
 @router.post("/processes/{process_id}/movements", status_code=status.HTTP_201_CREATED)
 async def create_process_movement(process_id: uuid.UUID, body: ProcessMovementCreate, request: Request, session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
     cid = await _policy(session, principal, request, "process.update")
-    await _get(session, LegalProcess, principal.tenant_id, process_id)
+    await _validate_links(session, principal.tenant_id, process_id=process_id)
     item = ProcessMovement(tenant_id=principal.tenant_id, created_by=principal.user_id, updated_by=principal.user_id, process_id=process_id, **body.model_dump())
     session.add(item)
     await session.flush()
@@ -163,7 +216,7 @@ async def create_process_movement(process_id: uuid.UUID, body: ProcessMovementCr
 async def update_process_movement(movement_id: uuid.UUID, body: ProcessMovementCreate, request: Request, session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
     cid = await _policy(session, principal, request, "process.update")
     item = await _get(session, ProcessMovement, principal.tenant_id, movement_id)
-    await _get(session, LegalProcess, principal.tenant_id, item.process_id)
+    await _validate_links(session, principal.tenant_id, process_id=item.process_id)
     values = body.model_dump()
     if (item.payload or {}).get("_intimation_launch"):
         values["payload"] = {**body.payload, "intimationId": item.payload["intimationId"],
@@ -188,22 +241,33 @@ async def delete_process_movement(movement_id: uuid.UUID, request: Request, sess
 
 @router.patch("/processes/{process_id}")
 async def update_process(process_id: uuid.UUID, body: ProcessCreate, request: Request, session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
-    cid = await _policy(session, principal, request, "process.update"); item = await _get(session, LegalProcess, principal.tenant_id, process_id)
+    cid = await _policy(session, principal, request, "process.update"); item = await _get(session, LegalProcess, principal.tenant_id, process_id, lock=True)
     await _validate_links(session, principal.tenant_id, client_id=body.client_id)
+    if body.client_id != item.client_id:
+        dependencies = await _linked_records(
+            session, principal.tenant_id, item.id, "process_id",
+            ((Appointment, "compromissos"), (FinancialEntry, "lançamentos financeiros"), (Investigation, "investigações")),
+            incompatible_client_id=body.client_id,
+        )
+        if dependencies:
+            raise HTTPException(status_code=409, detail=f"Não é possível trocar o cliente: existem {', '.join(dependencies)} vinculados a outro cliente. Revise esses vínculos antes de alterar o processo.")
     for key, value in body.model_dump().items(): setattr(item, key, value)
     item.updated_by = principal.user_id; await _record(session, principal, request, "process.update", "process", item.id, cid); await session.commit(); return {"id": item.id, "updated": True}
 
 
 @router.delete("/processes/{process_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_process(process_id: uuid.UUID, request: Request, session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
-    cid = await _policy(session, principal, request, "process.delete"); item = await _get(session, LegalProcess, principal.tenant_id, process_id)
+    cid = await _policy(session, principal, request, "process.delete"); item = await _get(session, LegalProcess, principal.tenant_id, process_id, lock=True)
+    dependencies = await _linked_records(session, principal.tenant_id, item.id, "process_id", PROCESS_DEPENDENCIES)
+    if dependencies:
+        raise HTTPException(status_code=409, detail=f"Processo possui registros vinculados: {', '.join(dependencies)}. Revise os vínculos antes de excluir ou altere o status do processo para preservar o histórico.")
     item.deleted_at, item.deleted_by, item.deletion_reason = datetime.now(UTC), principal.user_id, "Solicitação de usuário"
     await _record(session, principal, request, "process.delete", "process", item.id, cid); await session.commit()
 
 
 @router.post("/deadlines", status_code=status.HTTP_201_CREATED)
 async def create_deadline(body: DeadlineCreate, request: Request, session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
-    cid = await _policy(session, principal, request, "deadline.create"); await _get(session, LegalProcess, principal.tenant_id, body.process_id)
+    cid = await _policy(session, principal, request, "deadline.create"); await _validate_links(session, principal.tenant_id, process_id=body.process_id)
     item = Deadline(tenant_id=principal.tenant_id, created_by=principal.user_id, updated_by=principal.user_id, **body.model_dump())
     session.add(item); await session.flush(); await _record(session, principal, request, "deadline.create", "deadline", item.id, cid); await session.commit(); return {"id": item.id, "status": item.status}
 
@@ -219,7 +283,7 @@ async def create_appointment(body: AppointmentCreate, request: Request, session:
 @router.post("/intimations", status_code=status.HTTP_201_CREATED)
 async def create_intimation(body: IntimationCreate, request: Request, session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
     cid = await _policy(session, principal, request, "intimation.create")
-    if body.process_id: await _get(session, LegalProcess, principal.tenant_id, body.process_id)
+    if body.process_id: await _validate_links(session, principal.tenant_id, process_id=body.process_id)
     item = Intimation(tenant_id=principal.tenant_id, created_by=principal.user_id, updated_by=principal.user_id, source=body.source, intimation_type=body.intimation_type, process_id=body.process_id, received_at=body.received_at, confidence=body.confidence, status=body.status, content_ciphertext=cipher.encrypt(body.content) or "")
     session.add(item); await session.flush(); await _record(session, principal, request, "intimation.create", "intimation", item.id, cid); await session.commit(); return {"id": item.id, "status": item.status}
 

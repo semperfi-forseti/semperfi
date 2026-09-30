@@ -37,7 +37,8 @@ def _send_verification_code(
         message["From"] = sender
         message["To"] = recipient
         message["Subject"] = "Seu código de verificação SEMPER-FI"
-        action = "concluir seu cadastro" if purpose in {"register", "registration"} else "acessar sua conta"
+        action = ("redefinir sua senha" if purpose == "reset" else
+                  "concluir seu cadastro" if purpose in {"register", "registration"} else "acessar sua conta")
         message.set_content(
             f"Use o código {code} para {action} no SEMPER-FI.\n\n"
             f"O código expira em {settings.auth_otp_ttl_seconds} segundos e pode ser usado uma única vez.\n"

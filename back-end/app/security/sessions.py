@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import secrets
 import time
@@ -28,7 +30,7 @@ class SessionStore:
                 await client.aclose()
             return None
 
-    async def create(self, principal: Principal) -> str:
+    async def create(self, principal: Principal, *, password_hash: str | None = None) -> str:
         session_id = secrets.token_urlsafe(32)
         payload = {
             "user_id": str(principal.user_id), "tenant_id": str(principal.tenant_id),
@@ -38,6 +40,33 @@ class SessionStore:
             "auth_method": principal.auth_method,
             "account_type": principal.account_type,
         }
+        if principal.auth_method == "password":
+            if password_hash is None:
+                from app.db import SessionLocal
+                from app.models import User
+
+                async with SessionLocal() as session:
+                    user = await session.get(User, principal.user_id)
+                    password_hash = user.password_hash if user else None
+            if not password_hash:
+                raise RuntimeError("Credencial de sessão indisponível.")
+            # Compare on every request: changing a password revokes every old
+            # session, across Redis instances and local fallback, atomically
+            # with the database update. No password hash leaves the backend.
+            payload["credential_version"] = hashlib.sha256(password_hash.encode()).hexdigest()
+        if principal.auth_method in {"password", "oidc"}:
+            from sqlalchemy import select
+
+            from app.db import SessionLocal
+            from app.models import Membership
+            from app.models.organization import OrganizationSessionVersion
+
+            async with SessionLocal() as session:
+                payload["membership_version"] = await session.scalar(
+                    select(OrganizationSessionVersion.version).join(
+                        Membership, Membership.id == OrganizationSessionVersion.membership_id
+                    ).where(Membership.tenant_id == principal.tenant_id, Membership.user_id == principal.user_id)
+                )
         redis = await self._redis()
         if redis:
             try:
@@ -75,9 +104,10 @@ class SessionStore:
             principal = Principal(UUID(payload["user_id"]), UUID(payload["tenant_id"]), payload["email"], payload["display_name"], frozenset(payload["roles"]), mfa.astimezone(UTC) if mfa else None, payload["auth_method"], payload.get("account_type"))
         except (ValueError, KeyError, TypeError):
             return None
-        return await self._current_identity(principal)
+        return await self._current_identity(principal, payload.get("credential_version"), payload.get("membership_version"))
 
-    async def _current_identity(self, principal: Principal) -> Principal | None:
+    async def _current_identity(self, principal: Principal, credential_version: str | None = None,
+                                membership_version: str | None = None) -> Principal | None:
         if principal.auth_method == "development-header":
             return principal if (self.settings.environment in {"development", "test"}
                                  and self.settings.auth_mode == "development"
@@ -92,6 +122,7 @@ class SessionStore:
 
         from app.db import SessionLocal
         from app.models import Membership, Tenant, User
+        from app.models.organization import OrganizationSessionVersion
 
         async with SessionLocal() as session:
             row = (await session.execute(
@@ -101,9 +132,22 @@ class SessionStore:
                 .where(User.id == principal.user_id, User.is_active.is_(True), User.deleted_at.is_(None),
                        Membership.tenant_id == principal.tenant_id, Membership.is_active.is_(True), Tenant.is_active.is_(True))
             )).first()
+            current_version = await session.get(OrganizationSessionVersion, row[1].id) if row else None
         if not row:
             return None
+        # Suspension remains revoked after later reactivation. The boundary is
+        # scoped to this membership, preserving the user's other organizations.
+        if current_version and (
+            not isinstance(membership_version, str)
+            or not hmac.compare_digest(current_version.version, membership_version)
+        ):
+            return None
         user, membership, tenant = row
+        if principal.auth_method == "password" and (
+            not user.password_hash or not isinstance(credential_version, str)
+            or not hmac.compare_digest(credential_version, hashlib.sha256(user.password_hash.encode()).hexdigest())
+        ):
+            return None
         return Principal(user.id, membership.tenant_id, user.email, user.display_name,
                          frozenset([membership.role, *membership.permissions]), principal.mfa_verified_at, principal.auth_method, tenant.account_type)
 

@@ -5,6 +5,7 @@ Central jurídica operacional da FORSETI Technologies. Interface em português, 
 ## Estado atual
 
 - Login e cadastro para pessoa física (PF) ou jurídica (PJ), com senha e confirmação por código enviado ao e-mail. O acesso institucional OIDC é uma alternativa de configuração.
+- Recuperação de senha pelo link **Esqueci minha senha**, com código temporário por e-mail, confirmação da nova senha e invalidação das sessões anteriores.
 - A página pública apresenta recursos, orientações de cadastro, planos e perguntas frequentes antes do login, com navegação por seções e atalhos para os formulários.
 - Inicialização **sem clientes, processos, investigações, históricos ou saldos fictícios**. O painel aparece somente após verificar a sessão e carregar `/v1/frontend/bootstrap`.
 - Cadastros principais usam a API. Módulos avançados ainda têm integrações parciais, discriminadas abaixo.
@@ -35,6 +36,7 @@ Os testes automatizados e de navegador não substituem avaliação com leitores 
 | `audit-view.js` | Eventos persistidos, filtros e verificação de cadeia |
 | `billing-checkout.js` | Disponibilidade, pedido e checkout Asaas Sandbox |
 | `integrations-view.js` | Transparência, agentes Ollama, arquivos e relatórios persistidos |
+| `radar-view.js` | Consulta de CNPJ pela fila do backend e reabertura do histórico da organização |
 | `calculators.js` | Quatro calculadoras técnicas com parâmetros fornecidos pelo operador |
 
 As calculadoras não utilizam índices aproximados de IPCA/IGP-M/SELIC, juros fixos automáticos ou tabela penal presumida. Datas excluídas, fração, fator de atualização, juros e verbas são informados explicitamente. O resultado é aritmético; não determina elegibilidade jurídica nem substitui calendário oficial ou liquidação de sentença. São cálculos locais sem gravação, portanto não precisam enviar dados ao servidor.
@@ -106,7 +108,9 @@ No backend, use `ENVIRONMENT=production`, migrations aplicadas, Redis disponíve
 8. `AUTH_MODE` seleciona `password`, `oidc` ou `development`. Em OIDC, o provedor cuida da entrada/MFA; a verificação por e-mail descrita aqui pertence ao modo de senha.
 9. O painel aguarda a sessão autenticada e o bootstrap. Uma resposta 401 leva ao login; **Sair da conta** revoga a sessão no servidor.
 
-Cookies de desafio e sessão são HttpOnly e Secure em produção. A interface não salva senha ou código em `localStorage`/`sessionStorage`. Não há recuperação automática de senha nesta versão. Nome, e-mail e permissões vêm da sessão e não podem ser alterados localmente para obter privilégios.
+Cookies de desafio e sessão são HttpOnly e Secure em produção. A interface não salva senha ou código em `localStorage`/`sessionStorage`. Nome, e-mail e permissões vêm da sessão e não podem ser alterados localmente para obter privilégios.
+
+**Recuperação de senha:** escolha **Esqueci minha senha**, informe o e-mail e depois o código e a nova senha (12–128 caracteres, com confirmação). A solicitação recebe a mesma resposta para contas existentes e desconhecidas. O código está vinculado ao navegador, expira e possui limites de tentativas/reenvio. Após a troca, faça login novamente e confirme o 2FA; redefinir a senha não abre uma sessão. Sessões antigas são invalidadas. A atualização também exige um novo login, uma vez, para sessões por senha criadas antes da adoção da versão de credencial.
 
 O rodapé institucional permanece no fluxo da página, acessível por rolagem, com atalhos para entrar, cadastrar, abrir ajuda e voltar ao topo. Os atalhos movem o foco de teclado e respeitam movimento reduzido. Durante uma verificação, voltar aos formulários cancela o desafio anterior.
 
@@ -146,23 +150,23 @@ Removidos: `app.js`/`style.css` duplicados na raiz e `config/frontend.config.jso
 
 | ID | Requisito | Situação |
 | --- | --- | --- |
-| RF-F01 | Cadastrar/entrar como PF ou PJ, verificar código, sair e tratar expiração | Senha + código por e-mail; cadastro configurável; SMTP necessário; OIDC exige provedor |
+| RF-F01 | Cadastrar/entrar como PF ou PJ, recuperar senha, verificar código, sair e tratar expiração | Senha + código por e-mail; recuperação revoga sessões; SMTP necessário; OIDC exige provedor |
 | RF-F02 | Navegar por âncoras, atalhos e histórico | Implementado, 21 módulos |
 | RF-F03 | Painel calculado a partir dos registros | Implementado; início vazio |
-| RF-F04 | Criar, consultar, editar e excluir clientes | Cadastro principal integrado a `/v1/clients`; dados complementares do perfil 360° indisponíveis para alteração |
-| RF-F05 | Manter processos e andamentos | Cadastro principal e andamentos integrados; vínculos de arquivos indisponíveis na tela de análise local |
+| RF-F04 | Criar, consultar, editar e excluir clientes | Cadastro principal e perfil complementar persistidos; edição concorrente protegida por versão; documentos vinculados pela API |
+| RF-F05 | Manter processos e andamentos | Cadastro, andamentos e vínculos de arquivos integrados; remover vínculo preserva o arquivo original |
 | RF-F06 | Manter agenda, prazos e intimações | Operações individuais e lançamento conjunto atômico integrados; repetição idêntica não duplica registros |
 | RF-F07 | Manter receitas e despesas jurídicas | Integrado; não efetua pagamentos |
 | RF-F08 | Buscar registros e mascarar documentos | Implementado; mascaramento visual não substitui autorização |
-| RF-F09 | Gerir investigações, entidades e achados; consultar relações | Integração parcial; checklists TACER e matriz ACH da UI são rascunhos temporários |
+| RF-F09 | Gerir investigações, entidades e achados; consultar relações | Integração parcial; TACER/SIERA com formulário, histórico persistido e revisão humana; coletas externas exigem homologação |
 | RF-F10 | Executar conectores autorizados | Parcial; depende de fonte, credenciais e filas |
 | RF-F11 | Enviar e preservar evidências | Tela Arquivos integrada a envio, listagem, finalização, hash, histórico e download; depende de ingestão/cofre. Inspeção local continua separada |
 | RF-F12 | Consultar/gerar relatórios | Exportações locais, listagem de rascunhos do servidor, aprovação e download de PDF; cofre precisa de homologação |
 | RF-F13 | Consultar auditoria | Aba consulta eventos persistidos e verificação de cadeia da organização pela API, com tratamento de MFA/permissão |
 | RF-F14 | Importar clientes/processos de JSON | Integrado a `/v1/imports/frontend-demo`; nome histórico da rota preservado |
-| RF-F15 | Exibir conta e salvar preferências | Conta somente leitura; preferências visuais locais |
-| RF-F16 | Explorar OSINT, radar, APIs e referências | Parcial; catálogo não garante execução ou disponibilidade de cada serviço |
-| RF-F17 | Calculadoras com entradas do operador | Estimativas; calendário/fórmulas exigem validação específica |
+| RF-F15 | Exibir conta, gerir equipe e salvar preferências | Conta pessoal somente leitura; equipe, convites e seleção de organização via API; preferências visuais locais |
+| RF-F16 | Explorar OSINT, radar, APIs e referências | Radar CNPJ integrado ao backend com histórico; demais pesquisas do Radar e execução do catálogo ainda parciais |
+| RF-F17 | Calculadoras com entradas do operador | Quatro cálculos aritméticos com parâmetros explícitos, validação e arredondamento; sem presumir calendário, índice econômico ou direito a benefício |
 | RF-F18 | Plano & Consumo | Catálogo e checkout mensal Asaas Sandbox persistido; demais operações comerciais ainda sem contratação |
 | RF-F19 | Transparência Pública | Consulta CEIS/CNEP/CEPIM pelo backend, com finalidade e acompanhamento da fila; token somente no servidor |
 | RF-F20 | Agentes IA | Ollama desacoplado, entrada textual, fila, resultado persistido e revisão humana; depende de modelo instalado e worker |
@@ -178,21 +182,30 @@ Abra **Plano & Consumo** no menu ou no atalho do cabeçalho. **Ver planos** comp
 
 Os valores e limites estão em `data/commercial.json`, extraídos do `semperfi.html` fornecido na raiz. Altere esse JSON para revisar o catálogo e execute `npm run sync:backend`. O HTML de referência não é carregado nem distribuído pela aplicação.
 
-Adicionais aceitam quantidades inteiras de zero a cem e mostram o subtotal mensal. Pacotes de créditos e opções de recarga permitem consultar um resumo. Essas seleções são temporárias: não geram pedidos, pagamentos, créditos, limites contratados ou lançamentos financeiros. Corporate mostra os detalhes para uma futura proposta; o contato comercial ainda precisa ser configurado.
+Os seletores de adicionais, créditos e recargas foram retirados enquanto não houver contratação implementada. O catálogo preserva os planos e suas franquias para comparação. Corporate mostra condições gerais; o contato comercial ainda precisa ser configurado.
 
-No painel, o catálogo é carregado apenas ao abrir a seção; na página pública, carrega junto à apresentação. Ambos oferecem estado de carregamento, tratamento de falha e nova tentativa. Uma falha nesse arquivo não impede o acesso aos demais módulos. A tabela de operações descreve os custos previstos na referência; não executa serviços nem debita créditos. Os históricos permanecem sem registros comerciais.
+No painel, o catálogo é carregado apenas ao abrir a seção; na página pública, carrega junto à apresentação. Ambos oferecem estado de carregamento, tratamento de falha e nova tentativa. Uma falha nesse arquivo não impede o acesso aos demais módulos. Pedidos Sandbox vêm da API; não há histórico estático apresentado como operação real.
 
 O painel **Pagamentos · Asaas Sandbox** consulta configuração, pedidos e checkout mensal por cartão em `/v1/billing`. Apenas administradores com MFA recente podem iniciar um pedido. Valores vêm do backend; repetições usam o mesmo identificador de pedido. Produção, renovação, cancelamento, adicionais e carteiras ainda exigem implementação/homologação. `/v1/financial-entries` atende ao financeiro jurídico e não é usado como checkout.
 
 ### Limites dos dados complementares
 
-- Biografia, histórico político, patrimônio, empresas, notícias e documentos do perfil 360° continuam disponíveis para consulta. As ações de alteração avisam que estão indisponíveis e não gravam nem removem registros.
+- O Perfil complementar permite registrar biografia, profissão, histórico profissional/político, cargos, bens declarados, empresas, notícias e fontes. Começa vazio; os dados são declarados pelo operador, com edição pela API e conflito de versão sinalizado. Documentos vinculam arquivos existentes da organização a clientes/processos.
 - O lançamento conjunto exige revisão da descrição e das datas, grava tudo em uma transação e conclui a intimação. Datas processuais não são presumidas a partir do texto.
 - A tela **Arquivos e evidências** envia originais, lista registros persistidos e permite preservar, verificar hash, consultar a custódia e baixar. A opção recolhida de inspeção temporária calcula hash/dimensões no navegador, não extrai EXIF completo nem salva vínculos; somente essas análises locais desaparecem ao recarregar.
-- As marcações TACER, hipóteses e matriz ACH são rascunhos temporários. Elas não executam nem persistem resultados dos motores TACER/SIERA existentes na API.
-- Resultados da seção **Agentes IA** ficam registrados na API, incluindo falhas e limitações. O provider local e o modelo precisam ser configurados pelo administrador. Registrar consultas públicas no dossiê permanece indisponível.
+- O roteiro consultivo foi mantido. A aba **Planos TACER / SIERA**, no dossiê da investigação, permite gerar, reabrir e revisar planejamentos persistidos. Resultados são regras fixas; não executam coleta, não debitam créditos nem comprovam fatos. A matriz ACH sem persistência continua retirada.
+- Resultados da seção **Agentes IA** ficam registrados na API, incluindo falhas e limitações. O provider local e o modelo precisam ser configurados pelo administrador. “Analisar com IA” em OSINT Tools prepara o texto nesse formulário; exige revisão, finalidade, autorização e envio explícito. Registrar consultas públicas no dossiê permanece indisponível.
 
-O fluxo de evidências do workspace OSINT envia conteúdo textual/JSON à API. A configuração padrão de `ALLOWED_MIME_TYPES` autoriza PDF, imagens e vídeos: texto/JSON será rejeitado enquanto essa lista não for alinhada aos formatos que a organização autorizar. A inspeção local de arquivos não substitui esse fluxo de ingestão e preservação.
+### Informações apresentadas ao usuário
+
+- Estados, ações de auditoria e resultados são apresentados em português. Consultas, OSINT Tools, IA, relatórios, transparência e custódia exibem conteúdo organizado, sem JSON bruto como apresentação principal. Documentos estruturados respeitam a preferência de mascaramento, sem alterar o registro original.
+- IDs de execução, modelo e referências de diagnóstico ficam recolhidos para administrador identificado pela sessão carregada. Segredos e configurações privadas nunca aparecem nesses detalhes.
+- Links de pagamento e detalhes dos pedidos exigem administrador também na API. Ocultar elementos visuais não substitui autorização no servidor.
+- Falhas de conexão, autorização, integridade e indisponibilidade continuam visíveis. A interface não transforma uma falha em resultado vazio ou sucesso.
+- Auditoria e seu relatório para impressão consultam eventos persistidos. Atividades temporárias do navegador não são apresentadas como cadeia de auditoria.
+- Recursos retirados da interface continuam pendentes no escopo de lançamento; sua retirada não conta como implementação concluída.
+
+O fluxo de evidências do workspace OSINT envia conteúdo textual/JSON à API. A configuração padrão e `.env.example` incluem `text/plain` e `application/json`, com validação UTF-8 estrita e JSON válido no backend. Configurações antigas que sobrescrevam `ALLOWED_MIME_TYPES` precisam incluir esses tipos. Bytes originais e hash são preservados; downloads são anexos. A interface distingue arquivo recebido e preservação confirmada pelo cofre, permitindo retomar a finalização do mesmo registro. A inspeção local não substitui ingestão e preservação.
 
 ## Requisitos não funcionais
 
@@ -229,3 +242,91 @@ npm test
 Novo módulo: registre em `SECTIONS`, implemente `SECTION_RENDERERS` e, se preciso, `SECTION_AFTER`; conecte mutações a `/v1`; adicione atalho e documentação. Não introduza dados fictícios como fallback de falha.
 
 Antes de produção, homologue o modo de autenticação escolhido, isolamento de organização, anexos, relatórios, segurança e conectores com a infraestrutura real. Testes locais não são certificação de produção.
+
+### Testes de navegador
+
+Os scripts em `tests/browser` usam Playwright/Chromium e axe-core, com versões fixadas como dependências de desenvolvimento em `package-lock.json`. Execute a partir de `front-end`:
+
+```powershell
+npm ci
+npx playwright install chromium
+npm run test:browser
+# Aponte para um ambiente de testes Python com as dependências de back-end/uv.lock:
+$env:SEMPERFI_TEST_PYTHON = "C:/caminho/do/ambiente-de-testes/Scripts/python.exe"
+npm run test:browser:api
+```
+
+`functional.cjs` substitui as respostas da API e bloqueia rede externa. Verifica interações, XSS, duplicação de envio, fila, pagamentos, IA, arquivos, relatórios e acessibilidade estrutural. Renderizar as 21 abas nesse teste comprova navegação, sem atestar todos os fluxos delas.
+
+`auth-recovery.cjs` verifica sete cenários de recuperação no navegador, com API simulada, incluindo validação, erros, reenvio, recarga, cancelamento, retorno ao login e continuidade do cadastro PJ. `client-profile.cjs` cobre edição, recarga, conflito de versão, falha de rede e modo de consulta. Os testes Python exercitam os endpoints reais com transporte de e-mail capturado. A integração contínua executa essas suítes e o navegador com API real, instalando Chromium e suas dependências no runner Linux.
+
+`legal-live.cjs` inicia FastAPI real em porta aleatória, serve os assets sincronizados e usa SQLite novo em `back-end/var/test/browser-live-*`. Não lê a configuração privada da aplicação, não usa identidade real, não envia e-mail e não acessa Asaas/Ollama. Confere cadastro/edição, exclusões, lançamento de intimação pela tela, persistência após recarregar e eventos de auditoria. Identidade técnica de teste não homologa o login PF/PJ com SMTP real.
+
+Na revisão de 30/09/2026 passaram **69 testes Node, 23 cenários funcionais de navegador, sete de recuperação, cinco do perfil complementar e 11 grupos de fluxos com API real**. Houve zero erros JavaScript nos cenários; as telas testadas com 320 px e texto a 200%, incluindo o Radar, não apresentaram rolagem horizontal do documento. A verificação axe dos formulários, incluindo equipe, cobre estrutura e nomes acessíveis, com contraste fora dessa execução. A revisão manual completa de acessibilidade permanece necessária.
+
+## Prontidão para lançamento
+
+**Critério: funcionamento comprovado de cada fluxo das 21 abas.** Uma aba só recebe aceite completo após validar entradas, gravação/leitura posterior, permissões, falhas, apresentação acessível e dependências reais no ambiente de homologação. Ações escondidas, quantidade de arquivos e número de testes não representam percentual de conclusão funcional.
+
+### Evidências e pendências por aba — revisão de 30/09/2026
+
+| Aba | Evidência disponível | O que ainda impede o aceite completo |
+| --- | --- | --- |
+| Visão Geral | Navegação e dados do bootstrap sem seed; conteúdo não confiável escapado | Conferência dos indicadores com cenários completos e carga |
+| Clientes | Cadastro, perfil complementar, conflito de versão, permissões e vínculos de documentos testados | Homologação de casos profissionais, concorrência PostgreSQL e documentos no cofre real |
+| Processos | Cadastro/edição, andamentos, vínculos de documentos e proteção das dependências | Monitoramento automático e homologação do cofre real |
+| Agenda | Criar/editar/excluir pela tela, recarregar, estado concluído e vínculo automático de cliente | Homologação de permissões, agenda e uso concorrente no destino |
+| Prazos | Criar/editar/excluir pela tela e recarga; validação de datas | Homologação operacional de conclusão, filtros e concorrência |
+| Intimações | Criar e lançar pela tela; transação, idempotência, concorrência e rollback testados | Coleta automática de publicações e homologação da triagem completa |
+| Financeiro | Criar/editar/excluir pela tela, valores e status persistidos; CSV seguro | Conferência completa de filtros, totais e fluxo financeiro da organização |
+| Plano & Consumo | Contratos Asaas Sandbox, webhook autenticado, idempotência e papel de administrador testados | HTTPS/webhook real e ciclo comercial completo: renovação, troca, cancelamento, adicionais, créditos e franquias |
+| Consultas | Envio único, acompanhamento/retomada e falhas testados | Fontes reais, credenciais/filas e registro no dossiê |
+| Investigação OSINT | Vínculos, alvo protegido, políticas, TACER/SIERA com histórico e revisão persistidos | Homologação de todos os subfluxos e coleta real; concorrência PostgreSQL |
+| OSINT Tools | Falha total/parcial diferenciada; preparação de análise supervisionada; preservação com retomada do recibo | Consultas ainda diretas no navegador; unificar execução/persistência no backend |
+| Agentes IA | Provider, fila, estados, resposta validada, isolamento e revisão humana testados | Instalar/configurar modelo Ollama e homologar worker com entradas reais |
+| Radar Societário | CNPJ pela API/fila, resultado persistido, histórico após recarga e grafo responsivo | Homologar fonte/fila reais; pesquisas por CPF/nome/endereço e importação integral do mapa para investigação |
+| Transparência | Formulário e acompanhamento via backend; sem segredo no frontend | Credencial/fila e homologação CEIS/CNEP/CEPIM reais |
+| API Explorer | Catálogo, busca e navegação disponíveis | Execução autenticada pelo backend e verificação das fontes do catálogo |
+| ISO & Legislação | Consulta e filtro das referências | Revisão de fontes oficiais, edição e vigência; sem alegação de certificação |
+| Arquivos | Upload multipart, TXT/JSON, custódia, finalização, hash, download e vínculos cliente/processo | Ferramentas de ingestão, cofre versionado e restauração reais |
+| Calculadoras | 11 testes aritméticos e teste Chromium das quatro ferramentas | Homologação das entradas com casos profissionais revisados; nenhuma regra legal é presumida |
+| Relatórios | Aprovação/download com permissão e falhas; PDF e hash testados; auditoria consultada na API | Cofre real, geração completa e revisão dos formatos finais |
+| Auditoria | Eventos reais do núcleo, filtros, cadeia e relatório persistido testados | PostgreSQL/RLS, concorrência e retenção no ambiente de destino |
+| Configurações | Equipe, convites manuais, perfis, suspensão, revogação de sessões e troca de organização; preferências e acessibilidade | Homologação multiusuário com identidade/Redis/PostgreSQL reais e tecnologias assistivas |
+
+**Aceite integral para lançamento: 0/21 abas homologadas no destino (0%).** Esse indicador mede homologação completa segundo o critério acima. As evidências de implementação e funcionamento local estão discriminadas na tabela. Não há base para estimar um percentual único de desenvolvimento pelas linhas de código ou pelas telas existentes.
+
+Persistem pendências internas de implementação e externas de infraestrutura. Não existe hospedagem HTTPS configurada; Asaas permanece Sandbox desabilitado até configurar retorno/webhook. Ollama permanece sem modelo escolhido. Antes do lançamento, também falta homologar PostgreSQL/RLS, Redis/workers, cofre, restauração de backup, segurança e acessibilidade manual. Todas as 21 abas permanecem no escopo solicitado.
+
+**Data de entrega informada: 17/10/2026.** O aceite depende dos fluxos e serviços acima; essa data não transforma funcionalidades parciais em entregas concluídas. A prioridade seguinte é execução das OSINT Tools no backend, ciclo comercial e homologação das dependências reais.
+
+### Correções de continuidade — 29/09/2026
+
+Os problemas identificados na revisão de 27/09 receberam as correções abaixo. A matriz acima continua sendo a referência para funcionalidades e dependências ainda pendentes.
+
+| Prioridade | Fluxo | Alteração |
+| --- | --- | --- |
+| 1 | Busca global | Título e resultados escapados; documentos mantêm apenas dois dígitos finais com máscara ativa, inclusive CPF/CNPJ formatado; resultados são botões acessíveis por teclado. |
+| 1 | Vínculos jurídicos | Exclusões com dependências e trocas de cliente incompatíveis retornam 409 com orientação. Histórico não é apagado por cascata. |
+| 2 | OSINT e preservação | Falha DNS total interrompe o fluxo, falha parcial é sinalizada; GitLab vazio não confirma perfil. Preservação depende da confirmação do cofre; recibos são reutilizados, inclusive evidência já vinculada ao achado após recarga. Conclusão assíncrona não troca a aba atual. |
+| 2 | Organização nas tarefas | Tenant validado no envio e antes do acesso aos dados; filtros explícitos e contexto transacional RLS. Repetições concluídas não executam o provedor novamente. PostgreSQL e broker reais continuam pendentes de homologação. |
+| 3 | Apresentação | “Fechar” encerra o painel de notificações; exportação informa “dados carregados”; Radar ativo apresenta resultado e histórico, sem botão de JSON bruto. Cadastro de investigação é apresentado como preparação para revisão. |
+
+**Revalidação nesta data:** 61 arquivos passaram pela verificação de sintaxe JavaScript/JSON, UTF-8 e charset HTML; 44 arquivos de distribuição estão sincronizados. Os testes funcionais e de recuperação no navegador usam API simulada; `legal-live.cjs` usa API real e banco isolado. Os 415 testes Python aprovados estão detalhados no README do backend. Essas evidências não constituem homologação das 21 abas com serviços reais.
+
+### Entregas funcionais — 30/09/2026
+
+| Onde acessar | Operações implementadas | Proteções e limites |
+| --- | --- | --- |
+| Clientes → Abrir → Perfil complementar | Consultar e editar dados pessoais complementares, sete grupos de históricos/fontes, adicionar/remover registros e salvar | Versão impede sobrescrever edição de outra pessoa; falhas mantêm o formulário; confirmação antes de sair com alterações; fontes HTTP(S), máscara de CNPJ e conteúdo escapado |
+| Cliente → Documentos / Processo → Arquivos | Listar, vincular arquivo existente, reabrir, baixar quando preservado e remover vínculo | Organização e registro ativo conferidos pela API; somente leitura para auditor; exclusão do cliente/processo bloqueada enquanto houver vínculos; arquivo original mantido |
+| Configurações → Organização e equipe | Gerar/revogar convite manual, conferir/aceitar convite, selecionar organização, alterar perfil, suspender/reativar integrante | Administrador e MFA recente nas alterações; último administrador protegido; vínculo suspenso não afeta outras organizações; sessões antigas continuam revogadas após reativação |
+| Investigação → Planos TACER / SIERA | Gerar plano, consultar histórico/detalhe e registrar revisão humana | Escopo aprovado, autorização e organização conferidos; reenvio com a mesma solicitação não duplica; revisão registrada uma única vez; nenhum serviço externo executado por esse formulário |
+
+O convite é compartilhado manualmente pelo administrador: não há alegação de envio automático de e-mail. O destinatário precisa autenticar a conta do e-mail convidado, confirmar o código de segurança e reabrir o convite. Tokens não são armazenados em localStorage.
+
+**Validação:** 67 arquivos verificados em UTF-8/sintaxe/charset, 48 arquivos sincronizados para a API, 472 testes Python aprovados. O navegador com API real foi ampliado para perfil, vínculo/remoção de documento e plano/revisão após recarga. Nesse teste, apenas os metadados do arquivo original são preparados como fixture no banco descartável; upload e cofre reais continuam pendentes. Migrações até `20260929_0008` testadas em SQLite isolado. Para disponibilizar as novas rotas, o backend precisa carregar a nova versão; em produção, aplicar as migrations antes de iniciar.
+
+**Infraestrutura:** continuam pendentes a homologação HTTPS/webhook do Asaas Sandbox, o modelo/serviço Ollama e o funcionamento completo de filas, PostgreSQL/RLS e cofre. Portas abertas e health checks não comprovam esses fluxos.
+
+**Ordem de continuidade:** completar persistência e integração dos fluxos da matriz; configurar e homologar serviços reais; executar o aceite de cada aba, incluindo permissões, acessibilidade, falhas e restauração. Os testes de navegador estão declarados em `package.json`, com versões fixadas de Playwright/axe-core e execução incluída na integração contínua.

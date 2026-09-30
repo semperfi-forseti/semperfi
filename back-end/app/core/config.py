@@ -70,7 +70,8 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 52_428_800
     allowed_mime_types: list[str] | str = Field(
         default_factory=lambda: [
-            "application/pdf", "image/jpeg", "image/png", "image/tiff", "video/mp4", "video/quicktime"
+            "application/pdf", "image/jpeg", "image/png", "image/tiff", "video/mp4", "video/quicktime",
+            "text/plain", "application/json",
         ]
     )
     evidence_staging_dir: Path = Path("var/semperfi-evidence")

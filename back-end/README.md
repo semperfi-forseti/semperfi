@@ -6,6 +6,7 @@ API de gestão jurídica, investigação estruturada e evidências digitais. Fas
 
 - Núcleo de clientes, processos, andamentos, prazos, agenda, intimações e financeiro com persistência.
 - Cadastro e login PF/PJ com senha e código por e-mail, sessão opaca em cookie HttpOnly e alternativa de provedor OIDC. Acesso técnico restrito a desenvolvimento/testes explícitos.
+- Recuperação de senha por código de e-mail, com expiração, limites, resposta sem revelar existência da conta e revogação das sessões por senha anteriores.
 - Isolamento por `tenant_id`, políticas, auditoria encadeada, conectores e motores TACER/SIERA.
 - Ingestão, cofre e relatórios dependem de serviços externos. Agentes supervisionados usam provider Ollama desacoplado, com filas e resultados persistidos; execução real depende da instalação/configuração local.
 - Checkout Asaas **somente Sandbox** com preço no servidor, idempotência e webhook autenticado. Não libera assinatura, carteira ou créditos de produção.
@@ -26,7 +27,7 @@ As credenciais são lidas exclusivamente de `back-end/.env`, ignorado pelo Git. 
 - `ASAAS_CHECKOUT_RETURN_URL`: URL HTTPS pública do frontend. Deixar em branco enquanto não houver hospedagem/túnel; não usar endereço fictício.
 - O webhook deve apontar para a futura origem pública da API mais `/v1/billing/webhooks/asaas`. Essa origem pertence à configuração de hospedagem/Asaas; não é codificada no frontend nem presumida pelo servidor.
 - Configurar os eventos `CHECKOUT_CREATED`, `CHECKOUT_PAID`, `CHECKOUT_CANCELED` e `CHECKOUT_EXPIRED`. O header `asaas-access-token` é verificado em tempo constante; repetição de evento é idempotente. O callback serve somente para retornar à interface.
-- Aplicar a migration `20260923_0004` no banco de homologação após backup, antes de utilizar `/v1/billing`. Ela cria pedidos e recibos de webhook com políticas RLS em PostgreSQL. Os testes SQLite não homologam RLS nem contas reais.
+- Aplicar `alembic upgrade head` no banco de homologação após backup, antes de iniciar a nova versão. O head atual é `20260929_0008`: inclui pedidos/webhooks Sandbox, perfis complementares, equipe/convites, planejamentos e documentos vinculados. Os testes SQLite não homologam RLS nem contas reais.
 - O fluxo implementado é **assinatura mensal por cartão no Sandbox**. Pagamento confirmado produz somente estado de teste. Créditos, carteiras, adicionais, recorrências posteriores, troca/cancelamento e franquias de produção ainda não estão integrados.
 
 Referências do contrato: [checkout recorrente Asaas](https://docs.asaas.com/docs/checkout-com-assinatura-recorrente) e [eventos do checkout](https://docs.asaas.com/docs/eventos-para-checkout).
@@ -50,10 +51,14 @@ Manter o modelo vazio até confirmar instalação, memória disponível e GPU/VR
 
 - Formulários jurídicos validam campos, valores e relacionamentos; respostas PATCH são serializadas após atualizar valores gerados pelo banco. Auditor tem leitura, sem permissão para mutações/importação.
 - Lançamento de intimação é atômico e idempotente, com testes de concorrência e rollback.
+- A importação valida o lote inteiro antes de gravar: dados nulos, IDs duplicados, vínculos ausentes e valores/datas inválidos retornam 422. Nenhum processo ou prazo é descartado silenciosamente.
 - Consultas externas são enfileiradas e acompanhadas até um resultado terminal; `queued` não significa sucesso. Retomar acompanhamento não cria nova consulta.
+- Radar CNPJ usa a fila e o histórico `GET /osint/runs?connector_id=brasilapi&kind=cnpj`. A lista omite dados brutos e payload de autorização; resultado completo exige leitura autenticada da execução da própria organização.
+- Exclusões de cliente/processo com dependências e reassociação incompatível retornam 409. Escritas relacionadas bloqueiam as linhas-pai durante a transação PostgreSQL; histórico não sofre cascata.
 - Aprovação de relatórios e downloads exigem referências válidas, tenant e MFA. O hash de preservação usa os bytes do PDF.
 - Upload, finalização, histórico, verificação e download de evidências estão ligados à interface. Finalização mantém o original temporário até confirmar a transação; atestação exige preservação.
 - A interface distribuída em `app/static/frontend` inclui temas, acessibilidade e os módulos operacionais novos. Alterações devem partir de `front-end`, seguido do script de sincronização.
+- `/billing/status` fornece resumo sem links de pagamento ou IDs de pedido para perfis comuns; consulta do pedido completo exige administrador. A restrição independe da apresentação do frontend.
 
 As limitações por aba e o critério de prontidão ficam no [README do frontend](../front-end/README.md#prontidão-para-lançamento).
 
@@ -171,7 +176,9 @@ Os desafios ficam no banco, associados a um cookie opaco HttpOnly. O banco guard
 
 As migrations 0002/0003 acrescentam credenciais, tipo de conta e desafios de verificação sem apagar contas existentes. Em produção, execute `uv run alembic upgrade head` antes de iniciar a nova versão. SQLite em desenvolvimento/teste também possui atualização aditiva. Contas OIDC existentes não recebem senha automaticamente.
 
-Contas, organizações e vínculos inativos são revalidados ao consultar a sessão. Senhas e códigos não são refletidos nos erros de validação. Recuperação automática de senha e envio por SMS ainda não estão implementados.
+Contas, organizações e vínculos inativos são revalidados ao consultar a sessão. Senhas e códigos não são refletidos nos erros de validação dos endpoints de autenticação. Envio por SMS ainda não está implementado.
+
+**Recuperação de senha:** `POST /v1/auth/password/forgot` recebe o e-mail e responde 202 de forma equivalente para contas elegíveis e desconhecidas. O envio usa a configuração SMTP existente, após a resposta HTTP. `POST /v1/auth/password/reset` recebe `code` e `password` (12–128 caracteres), exige o cookie de desafio do mesmo navegador e valida expiração, tentativas e uso único. Reenvio/cancelamento usam os endpoints de desafio existentes. A redefinição invalida sessões por senha mediante versão de credencial verificada no servidor em cada requisição; exige novo login e 2FA. Desafios concorrentes não podem sobrescrever uma alteração de senha posterior. Sessões por senha anteriores a esta versão da aplicação precisarão de novo login uma vez. Nenhuma migration nova é necessária para esse fluxo.
 
 ### Envio do código por e-mail
 
@@ -214,7 +221,7 @@ No modo OIDC, o provedor trata senha/MFA. Estados OIDC pendentes ficam na memór
 | ID | Capacidade | Implementação/condição |
 | --- | --- | --- |
 | RF-B01 | Consultar opções de entrada e sessão | `GET /auth/status`, sem autenticação implícita |
-| RF-B02 | Cadastrar PF/PJ, autenticar, encerrar sessão e consultar identidade | `/auth/register`, `/auth/login`, `/auth/verify`, `/auth/resend`, `/auth/cancel`, `/auth/session`, `/auth/logout`, `/me` |
+| RF-B02 | Cadastrar PF/PJ, autenticar, recuperar senha, encerrar sessão e consultar identidade | `/auth/register`, `/auth/login`, `/auth/verify`, `/auth/password/forgot`, `/auth/password/reset`, `/auth/resend`, `/auth/cancel`, `/auth/session`, `/auth/logout`, `/me` |
 | RF-B03 | Confirmar segunda etapa de autenticação | Código por e-mail no modo senha; MFA delegado ao provedor no modo OIDC |
 | RF-B04 | Separar organizações | Filtros `tenant_id`, contexto do banco e migration RLS |
 | RF-B05 | Gerir clientes/processos | CRUD, consulta e soft delete |
@@ -223,7 +230,7 @@ No modo OIDC, o provedor trata senha/MFA. Estados OIDC pendentes ficam na memór
 | RF-B08 | Importar clientes e processos | `/imports/frontend-demo`; execução explícita, sem seed automático |
 | RF-B09 | Gerir investigações, entidades, relações e achados | Políticas e auditoria em `investigations.py` |
 | RF-B10 | Executar conectores | BrasilAPI, DataJud, Transparência e RDAP; depende da fonte/configuração |
-| RF-B11 | Planejar/analisar investigações | Catálogo e motores TACER/SIERA; resultados determinísticos |
+| RF-B11 | Planejar/analisar investigações | TACER/SIERA determinísticos, histórico persistido, reenvio idempotente e revisão humana registrada |
 | RF-B12 | Processar tarefas | Celery, Redis, outbox e beat |
 | RF-B13 | Ingerir/preservar evidências | Upload, hash, metadados, finalização e S3/Object Lock |
 | RF-B14 | Solicitar/confirmar legal hold | Segundo usuário e autorização |
@@ -241,10 +248,10 @@ O contrato exato de métodos, payloads e respostas é `/v1/openapi.json`. Implem
 As capacidades da API e as ações disponíveis na UI têm escopos diferentes:
 
 - O cadastro principal e o lançamento conjunto de intimação usam a API. `POST /intimations/{id}/launch` cria andamento e, opcionalmente, prazo/compromisso em uma transação. Repetição idêntica retorna os mesmos identificadores; alterações conflitantes retornam 409. Relacionamentos validam organização, existência e compatibilidade cliente/processo. Auditor não pode escrever.
-- Alterações de biografia, histórico político, patrimônio, vínculos empresariais, notícias e documentos do perfil 360° estão bloqueadas na UI. Elas não simulam gravação; a consulta ao perfil e o cadastro principal continuam disponíveis.
+- O perfil complementar possui leitura/gravação autenticada, proteção por versão e criptografia pelo cipher configurado. Documentos relacionam evidências existentes a clientes/processos da mesma organização, preservando o arquivo e a custódia ao desfazer o vínculo.
 - A tela Arquivos usa `/evidences`, `/evidences/uploads` e ações de finalização, eventos, verificação e download. Inspeção temporária no navegador permanece separada. Vínculo direto a processo/cliente ainda não foi implementado; a investigação pode fornecer esse contexto.
-- O frontend gera evidências de texto/JSON, mas `ALLOWED_MIME_TYPES` padrão autoriza PDF, imagens e vídeos. Esses envios são rejeitados até que a configuração seja alinhada aos formatos autorizados para o ambiente. Cofre e pipeline também precisam estar disponíveis.
-- Os motores TACER/SIERA da API são distintos dos checklists TACER e da matriz ACH locais, que desaparecem ao recarregar a página. A nova seção Agentes IA registra execuções no servidor; transformar uma sugestão em achado jurídico continua exigindo revisão e registro explícitos.
+- TXT/JSON agora fazem parte de `ALLOWED_MIME_TYPES` padrão e `.env.example`. Conteúdo deve ser UTF-8 válido; JSON exige parse válido e rejeita NaN/Infinity. Extensão/MIME incompatíveis e conteúdo binário são rejeitados; bytes originais, BOM e hash não são reescritos. Downloads são anexos; antivírus, limite de tamanho e preservação continuam exigidos. Configurações antigas que definam a lista explicitamente precisam incluir `text/plain,application/json`. Cofre e pipeline também precisam estar disponíveis.
+- TACER/SIERA possuem formulários, histórico, detalhe e revisão na interface. Planejam o trabalho com regras fixas, sem consulta externa nem inferência por IA. Checklists e matriz ACH sem persistência foram retirados; o roteiro consultivo foi mantido. A seção Agentes IA permanece desacoplada e exige revisão dos resultados.
 - A aba Auditoria consulta eventos persistidos e `/audit-events/verify-chain`. Atividades temporárias do navegador não são apresentadas nessa aba como prova da cadeia do servidor.
 
 ## Requisitos não funcionais
@@ -319,5 +326,58 @@ Não homologado: OIDC real, PostgreSQL/RLS real, stack Docker completa, filas/Re
 1. Configurar base dedicada de homologação e contas/vínculos aprovados.
 2. Verificar persistência dos cadastros e isolamento por organização.
 3. Configurar Redis, workers e cofre antes de anexos/relatórios.
-4. Implementar persistência e reabilitar os subfluxos bloqueados, como documentos do perfil 360° e lançamento conjunto de intimações; alinhar os tipos MIME antes dos testes de evidências textuais/JSON.
+4. Homologar os perfis complementares, equipe, documentos vinculados, planos de investigação, preservação de TXT/JSON e lançamento conjunto de intimações já integrados.
 5. Homologar segurança, backup/restauração e comportamento de falhas antes de produção.
+
+### Resultado da revisão local — 26/09/2026
+
+- **296 testes Python passaram**, executados em ambiente isolado recriado a partir de `uv.lock`, com banco exclusivo e transporte SMTP bloqueado. Um aviso de depreciação vem do TestClient/httpx; a dependência não foi atualizada fora do lockfile.
+- Ruff passou em `app` e `tests`. A cadeia Alembic até `20260923_0004` foi aplicada com sucesso em SQLite novo e isolado; o banco operacional não foi migrado por essa verificação.
+- O teste `front-end/tests/browser/legal-live.cjs` comprovou fluxos do núcleo com navegador, FastAPI e SQLite reais, sem substituir endpoints jurídicos: cadastro/edição de cliente e processo, cadastro/edição/exclusão de agenda, prazo e financeiro, criação/lançamento de intimação, persistência após recarregar e auditoria.
+- Pagamentos, Ollama, armazenamento e fontes externas usam simulações nos testes de contrato. Isso não equivale à homologação desses serviços. A matriz das 21 abas e os critérios de aceite estão no [frontend](../front-end/README.md#prontidão-para-lançamento).
+
+### Correções de continuidade — 29/09/2026
+
+Correções aplicadas aos achados da revisão de 27/09:
+
+- **Vínculos jurídicos:** bloqueio 409 com mensagem acionável antes de excluir registros com dependências ou alterar o cliente de processo com vínculos incompatíveis. Atualização/serialização de novos clientes/processos ocorre antes do commit, preservando o contexto transacional. Regressões incluem agenda, financeiro, prazos, investigações e histórico.
+- **Organização nas tarefas:** tenant validado antes de abrir a sessão, contexto RLS definido e filtros explícitos no acesso. Outbox transmite a organização da coluna persistida; eventos inválidos ficam em `connector.run.rejected`, com conteúdo preservado para revisão, e não impedem o despacho dos próximos lotes. Mensagens legadas do broker sem tenant falham sem acesso aos dados. Execuções já concluídas não repetem o provedor. A transação mantém bloqueio durante a consulta externa; PostgreSQL/RLS e broker reais ainda exigem homologação, e SQLite pode bloquear outras gravações nesse intervalo.
+- **Evidências e consultas:** erro total/parcial DNS e falha de finalização não anunciam preservação concluída. O frontend retoma o recibo existente; uma resposta de upload perdida exige conferência da lista de arquivos. A promoção de achado reutiliza a evidência vinculada após recarregar a página. TXT/JSON possuem validação de conteúdo e download como anexo.
+- **Novos fluxos:** recuperação de senha com revogação de sessões e histórico autenticado de consultas, utilizado pelo Radar CNPJ.
+- **Pendências dessa revisão:** perfis/documentos de clientes, equipe e TACER/SIERA foram implementados na continuidade de 30/09 abaixo. Permanecem monitoramento de processos e coleta de publicações; execução persistida de todas as OSINT Tools; demais pesquisas do Radar e importação integral do mapa; ciclo comercial de renovação, troca, cancelamento, adicionais e franquias. A matriz do frontend discrimina as demais condições por aba.
+
+As verificações de API usam bancos descartáveis em `var/test`, transporte de e-mail capturado e provedores simulados. Dados operacionais não participam desses testes. A lista MIME do `.env` local foi ampliada para TXT/JSON; credenciais e demais configurações foram preservadas.
+
+No ambiente local, `/health/ready` respondeu com banco acessível e `/auth/status` confirmou recuperação de senha habilitada. Asaas Sandbox e o provider de IA permanecem desabilitados; faltam retorno HTTPS/webhook homologado e modelo/serviço Ollama. Saúde da API não homologa filas, PostgreSQL/RLS, cofre, retenção ou restauração. Configurações e credenciais continuam restritas ao `.env` privado.
+
+### Resultado da validação — 29/09/2026
+
+- **415 testes Python aprovados**, em banco isolado, com diretório temporário exclusivo, SMTP capturado/bloqueado e sem pagamentos ou chamadas reais a provedores. Incluem recuperação PF/PJ, expiração/reuso de OTP, revogação de sessões, ausência de senha/código nos erros de validação, vínculos jurídicos, isolamento das tarefas, outbox, histórico OSINT e ingestão TXT/JSON.
+- Ruff em `app`/`tests`, compilação Python e `git diff --check` aprovados. Permanece um aviso de depreciação do TestClient/httpx; o lockfile Python foi preservado.
+- **65 testes Node, 20 cenários funcionais e sete cenários de recuperação no navegador aprovados**, sem erros JavaScript. A API é simulada nessas duas suítes de navegador; acessibilidade automatizada não inclui contraste nem avaliação manual.
+- O fluxo jurídico de navegador com FastAPI e SQLite reais foi executado novamente com sucesso: cadastros, edições, exclusões permitidas, lançamento de intimação, persistência após recarga e auditoria. Não utilizou banco operacional nem identidade real.
+- **61 arquivos do frontend** passaram pela verificação de UTF-8, mojibake, charset HTML e sintaxe; **44 arquivos de distribuição** estão sincronizados. Playwright/axe-core foram fixados no lockfile e instalados com `npm ci`; a execução dos testes de navegador foi adicionada ao workflow de CI. O workflow remoto não foi disparado nesta entrega.
+
+### Entregas e validação — 30/09/2026
+
+Prazo informado pelo responsável: **17/10/2026**, mantendo as 21 abas no escopo. A matriz de aceite continua no README do frontend.
+
+| Fluxo | Contrato `/v1` | Persistência e regras |
+| --- | --- | --- |
+| Perfil complementar | `GET/PUT /clients/{id}/profile` | Tabela `client_profiles`; conteúdo pelo cipher da aplicação; versão inicial 0, atualização incrementa e versão desatualizada retorna 409; limite 250 KB e 100 registros por grupo; cliente ativo e tenant conferidos; auditor consulta |
+| Documentos jurídicos | `GET/POST /clients/{id}/documents`, equivalentes para `processes`; `DELETE .../documents/{link_id}` | Tabela `legal_document_links`; apenas evidência existente da mesma organização; vínculo único por alvo/arquivo; remoção não apaga original/custódia; exclusão do alvo bloqueada enquanto houver vínculo |
+| Equipe | `GET /organization/mine`, `POST /organization/switch`, `GET /organization/members`, `PATCH /organization/members/{id}` | Permissões de administrador, MFA recente, proteção contra autobloqueio e último administrador; suspensão restrita ao vínculo; versão de sessão por membership impede reaproveitar cookie após reativação |
+| Convites | `GET/POST /organization/invitations`, `DELETE /organization/invitations/{id}`, `POST /organization/invitations/preview` e `/accept` | Compartilhamento manual, validade sete dias, destinatário autenticado pelo mesmo e-mail e MFA recente; token aleatório, somente hash no banco; uso único, revogação e reenvio invalidam links anteriores; aceite preserva vínculos existentes |
+| TACER/SIERA | POSTs anteriores preservados; `GET /investigation-engines/runs`, `GET /runs/{id}`, `PATCH /runs/{id}/review` | Entradas/resultados protegidos pelo cipher; consulta de histórico sem autorização/alvo; detalhe autenticado; escopo aprovado; chave `request_id` idempotente; revisão humana imutável; planejamento determinístico não executa coleta nem cobrança |
+
+As tabelas novas são criadas pelas migrations `0005` a `0008`. Há políticas RLS nas tabelas de domínio em PostgreSQL; a tabela de versões de sessão participa da verificação de identidade antes de estabelecer o tenant. Em desenvolvimento/teste, `init_db` cria as tabelas novas ao carregar o backend. Em implantação, faça backup e execute `alembic upgrade head` antes de iniciar a nova versão. Não aplique downgrade em dados operacionais: ele remove as tabelas desses fluxos.
+
+Validação desta entrega:
+
+- **472 testes Python passaram**, incluindo perfis, autorização entre organizações, documentos, convites, revogação persistente de sessões, idempotência/histórico e revisão dos planejamentos. Ruff e compilação aprovados; permanece o aviso de depreciação TestClient/httpx.
+- **69 testes Node e 35 cenários de navegador com respostas controladas** (23 funcionais, sete de recuperação, cinco de perfil), sem erros JavaScript. Acessibilidade estrutural automatizada inclui a equipe; contraste e tecnologias assistivas exigem validação manual.
+- **11 grupos de fluxos com navegador → FastAPI → SQLite reais**, em processo/banco isolados, incluindo salvar/reabrir perfil, vincular/desvincular documento e revisar/reabrir plano. Os metadados do arquivo original são uma fixture isolada; nenhum upload ao cofre real é presumido por esse teste.
+- **Alembic em SQLite isolado:** upgrade até `20260929_0008`, downgrade até `0004` e novo upgrade aprovados; cadastro anterior preservado e integridade do banco confirmada. Não houve migration no banco operacional.
+- **67 arquivos do frontend verificados e 48 sincronizados**. Nenhuma credencial foi incluída nos módulos ou testes; nenhum pagamento, e-mail ou consulta externa foi disparado por essa validação.
+
+Continuam necessários: monitoramento/publicações, demais OSINT Tools e pesquisas do Radar, execução do API Explorer, ciclo comercial completo e homologação HTTPS/Asaas Sandbox, Ollama, Redis/workers, PostgreSQL/RLS, cofre, backup/restauração e acessibilidade manual. Testes locais aprovados não significam aceite integral de lançamento.

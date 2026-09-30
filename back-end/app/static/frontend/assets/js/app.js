@@ -7,7 +7,7 @@
 const STORAGE_KEY = 'semperfi_db_v1';
 const SETTINGS_KEY = 'semperfi_settings_v1';
 
-// Calend?rio visual: dias da semana; feriados do ju?zo s?o informados nas calculadoras.
+// Calendário visual: dias da semana; feriados do juízo são informados nas calculadoras.
 const isWeekend = d => d.getDay()===0 || d.getDay()===6;
 
 function toISO(d){
@@ -88,6 +88,7 @@ function normalizeProfileRole(profile=''){
 }
 function currentUserRole(){ return normalizeProfileRole(SETTINGS.userProfile || 'Advogado'); }
 function canViewBilling(){ return BILLING_VISIBLE_ROLES.has(currentUserRole()); }
+function canEditLegalRecords(){ return String(SETTINGS.userProfile||'').split(',').some(role=>['administrator','manager','lawyer','investigator','analyst'].includes(role.trim())); }
 
 function formatBytes(bytes){
   if (bytes == null || !Number.isFinite(bytes)) return 'Personalizado';
@@ -194,12 +195,20 @@ function backendUrl(path){
   return `${base}${path}`;
 }
 function apiErrorMessage(err){
-  if (!err) return 'Erro desconhecido';
-  if (typeof err === 'string') return err;
-  if (err.detail?.reason) return err.detail.reason;
-  if (typeof err.detail === 'string') return err.detail;
-  if (Array.isArray(err.detail)) return err.detail.map(item => `${(item.loc || []).filter(part => part !== 'body').join('.')}: ${item.msg || 'valor inválido'}`).join('; ');
-  return err.message || 'Falha na API';
+  const fallback = 'Não foi possível concluir a operação. Tente novamente; se o problema continuar, procure o administrador.';
+  if (!err) return fallback;
+  if (err.name === 'AbortError' || err.name === 'TimeoutError') return 'A resposta demorou mais que o esperado. Confira o registro antes de tentar novamente.';
+  if (Array.isArray(err.detail)) {
+    const fields = {name:'Nome',document:'Documento',email:'E-mail',phone:'Telefone',client_id:'Cliente',clientId:'Cliente',process_id:'Processo',processId:'Processo',number:'Número do processo',title:'Título',amount:'Valor',claim_value:'Valor da causa',value:'Valor',due_date:'Vencimento',appointment_date:'Data do compromisso',received_at:'Data de recebimento',entry_date:'Data do lançamento',date:'Data',content:'Conteúdo',description:'Descrição',purpose:'Finalidade',legal_basis:'Base legal',authorization_reference:'Autorização',id:'Referência do registro'};
+    return [...new Set(err.detail.map(item => {
+      const field = fields[(item.loc || []).at(-1)] || 'Dados informados';
+      const message = item.type === 'missing' ? 'preenchimento obrigatório' : item.type === 'string_too_short' ? 'texto muito curto' : item.type === 'string_too_long' ? 'texto acima do tamanho permitido' : 'verifique o valor informado';
+      return `${field}: ${message}.`;
+    }))].join(' ');
+  }
+  const message = typeof err === 'string' ? err : err.detail?.reason || (typeof err.detail === 'string' ? err.detail : err.message);
+  if (!message || /(?:Traceback|SQLAlchemy|IntegrityError|asyncpg|sqlite|\bSELECT\b|\bINSERT\b|\/v1\/|https?:\/\/|[A-Z]{2,}_[A-Z_]{2,}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9-]{20,}|\$aact_|Failed to fetch|NetworkError)/i.test(message)) return fallback;
+  return message;
 }
 function mapApiRisk(value){ return ({baixo:'low', medio:'medium', alto:'high'})[value] || value; }
 function mapApiEntityType(value){
@@ -237,7 +246,7 @@ async function backendApi(path, options = {}){
   if (!res.ok){
     let payload = null;
     try { payload = await res.json(); } catch(e){ payload = { message:`HTTP ${res.status}` }; }
-    throw payload;
+    throw Object.assign(payload && typeof payload === 'object' ? payload : {message:'A operação não pôde ser concluída.'}, {status:res.status});
   }
   if (res.status === 204) return null;
   const text = await res.text();
@@ -323,8 +332,17 @@ async function persistMovement(processId, data, id=''){
   const saved = id ? await backendApi(`/process-movements/${id}`, { method:'PATCH', body: JSON.stringify(body) }) : await backendApi(`/processes/${processId}/movements`, { method:'POST', body: JSON.stringify(body) });
   return { ...data, id:String(saved.id || id), processId, createdAt:(dbGet('processMovements', String(saved.id || id))?.createdAt || Date.now()), attachments:[] };
 }
-async function createBackendEvidenceRecord({ investigationId, sourceName, sourceType='manual_upload', sourceUrl='', collectionMethod='manual_upload', content, filename='evidence.txt', mimeType='text/plain', findingId=null, autoAttest=false }){
+// Receipts only, retained for this session so a failed finalization reuses its upload.
+const evidenceTransfers = new Map();
+async function createBackendEvidenceRecord({ investigationId, sourceName, sourceType='manual_upload', sourceUrl='', collectionMethod='manual_upload', content, filename='evidence.txt', mimeType='text/plain', findingId=null, autoAttest=false, existingEvidenceId=null }){
   const serializedContent = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
+  const key = await sha256Hex(JSON.stringify([investigationId,sourceName,sourceType,sourceUrl,collectionMethod,mimeType,findingId,serializedContent]));
+  const transfer = evidenceTransfers.get(key) || {};
+  evidenceTransfers.set(key, transfer);
+  if (transfer.job) return transfer.job;
+  if (existingEvidenceId && !transfer.evidenceId) { transfer.evidenceId=String(existingEvidenceId); transfer.uploadUncertain=false; }
+  if (transfer.uploadUncertain) throw new Error('O recebimento do arquivo ainda não foi confirmado. Confira a aba Arquivos antes de enviar novamente.');
+  transfer.job = (async () => {
   const form = new FormData();
   form.append('file', new File([serializedContent], filename, { type:mimeType }));
   if (investigationId) form.append('investigation_id', investigationId);
@@ -337,28 +355,43 @@ async function createBackendEvidenceRecord({ investigationId, sourceName, source
   form.append('payload_preview', serializedContent.slice(0, 2000));
   if (sourceUrl) form.append('source_url', sourceUrl);
 
-  const created = await backendApi('/evidences/uploads', { method:'POST', body: form });
+  if (!transfer.evidenceId) {
+    try {
+      const created = await backendApi('/evidences/uploads', { method:'POST', body: form });
+      if (!created?.evidence_id) throw new Error('Não foi possível confirmar o recebimento do arquivo.');
+      transfer.evidenceId = String(created.evidence_id);
+    } catch (error) {
+      // A lost response can hide a successful POST. Do not submit a duplicate blindly.
+      transfer.uploadUncertain = !error?.status || error.status >= 500;
+      throw error;
+    }
+  }
   let warning = '';
+  let preserved = false;
   try {
-    await backendApi(`/evidences/${created.evidence_id}/finalize`, { method:'POST' });
+    const finalized = await backendApi(`/evidences/${transfer.evidenceId}/finalize`, { method:'POST' });
+    preserved = ['preserved','validated'].includes(finalized?.status);
+    if (!preserved) throw new Error('O cofre ainda não confirmou a preservação do arquivo.');
   } catch(err){
     warning = apiErrorMessage(err);
   }
-  if (autoAttest){
+  if (autoAttest && preserved){
     try {
-      await backendApi(`/evidences/${created.evidence_id}/attest`, { method:'POST' });
+      await backendApi(`/evidences/${transfer.evidenceId}/attest`, { method:'POST' });
     } catch(err){
       warning = warning || apiErrorMessage(err);
     }
   }
   if (findingId){
-    await backendApi(`/findings/${findingId}`, {
+    try { await backendApi(`/findings/${findingId}`, {
       method:'PATCH',
-      body: JSON.stringify({ evidence_id: created.evidence_id, classification:'achado' })
-    });
+      body: JSON.stringify({ evidence_id: transfer.evidenceId, ...(preserved ? {classification:'achado'} : {}) })
+    }); } catch (err) { warning = warning || apiErrorMessage(err); }
   }
-  await refreshBackendBootstrap();
-  return { evidenceId:String(created.evidence_id), warning };
+  try { await refreshBackendBootstrap(); } catch (_) { warning = warning || 'Atualize a lista de arquivos para conferir o registro.'; }
+  return { evidenceId:transfer.evidenceId, preserved, warning };
+  })();
+  try { return await transfer.job; } finally { transfer.job = null; }
 }
 
 // ---------- Audit ----------
@@ -408,8 +441,9 @@ function dbGet(collection, id){ return DB[collection].find(x=>x.id===id); }
 // ---------- Helpers de máscara ----------
 function maskDoc(doc){
   if (!SETTINGS.masked || !doc) return doc;
-  if (doc.length > 14) return doc.replace(/\d/g,'*');
-  return doc.replace(/\d(?=\d{2})/g,'*');
+  const value = String(doc);
+  let remaining = (value.match(/\d/g) || []).length;
+  return value.replace(/\d/g, digit => --remaining < 2 ? digit : '*');
 }
 function maskHash(h){
   if (!SETTINGS.masked || !h) return h;
@@ -607,7 +641,14 @@ const SECTION_RENDERERS = {};
 const SECTION_AFTER = {};
 
 // ---------- Modal helpers ----------
+function confirmModalLeave(){
+  const panel=document.getElementById('clientProfilePanel');
+  if(panel?._profileController?.isDirty() && !confirm('Há alterações não salvas no perfil. Deseja descartá-las?')) return false;
+  if(panel) panel._profileController=null;
+  return true;
+}
 function openModal({title, body, footer, wide=false, onMount}){
+  if(!confirmModalLeave()) return;
   const c = document.getElementById('modalContent');
   c.className = 'modal-content' + (wide?' wide':'');
   c.innerHTML = `
@@ -620,7 +661,10 @@ function openModal({title, body, footer, wide=false, onMount}){
   if (onMount) onMount(c);
   window.SemperfiLegalForms?.enhance(c, {processes:DB.processes});
 }
-function closeModal(){ document.getElementById('modal').classList.remove('active'); }
+function closeModal(){ if(!confirmModalLeave()) return false; document.getElementById('modal').classList.remove('active'); return true; }
+window.addEventListener('beforeunload',event=>{
+  if(document.getElementById('clientProfilePanel')?._profileController?.isDirty()) {event.preventDefault();event.returnValue='';}
+});
 document.getElementById('modal').addEventListener('click', e => { if (e.target.id==='modal') closeModal(); });
 
 // ============================================================
@@ -1435,11 +1479,11 @@ function renderIntimationsTab(){
   else if (intState.tab==='erro') list = list.filter(i=>i.status==='erro');
   else if (intState.tab==='concluidas') list = list.filter(i=>i.status==='concluida');
 
-  const html = list.length ? `<table><thead><tr><th>ID</th><th>Fonte</th><th>Tipo</th><th>Recebido</th><th>Processo</th><th>Confiança</th><th>Ações</th></tr></thead><tbody>
+  const html = list.length ? `<table><thead><tr><th>Conteúdo</th><th>Fonte</th><th>Tipo</th><th>Recebido</th><th>Processo</th><th>Confiança</th><th>Ações</th></tr></thead><tbody>
     ${list.map(i=>{
       const p = dbGet('processes', i.processId);
       return `<tr>
-        <td style="font-family:'JetBrains Mono';font-size:11px">${i.id}</td>
+        <td>${escapeHTML(i.content.slice(0,70))}${i.content.length>70?'…':''}</td>
         <td>${escapeHTML(i.source)}</td><td>${escapeHTML(i.type)}</td><td>${fmtDateTime(i.receivedAt)}</td>
         <td style="font-family:'JetBrains Mono';font-size:11px">${escapeHTML(p?.number||'—')}</td>
         <td><span class="status-chip ${i.confidence==='alta'?'active':'pending'}">${escapeHTML(i.confidence)}</span></td>
@@ -1457,7 +1501,7 @@ function renderIntimationsTab(){
 function showIntimationDetail(id){
   const i = dbGet('intimations', id);
   const p = dbGet('processes', i.processId);
-  openModal({ title:`Intimação ${i.id}`, body:`
+  openModal({ title:'Revisar intimação', body:`
     <div class="detail-row"><span class="detail-label">Fonte:</span><span class="detail-value">${escapeHTML(i.source)}</span></div>
     <div class="detail-row"><span class="detail-label">Tipo:</span><span class="detail-value">${escapeHTML(i.type)}</span></div>
     <div class="detail-row"><span class="detail-label">Recebido:</span><span class="detail-value">${fmtDateTime(i.receivedAt)}</span></div>
@@ -1810,34 +1854,10 @@ async function doQuery(resume=false){
   } finally { queryState.loading=false; renderQueryForm(); }
 }
 function renderQueryResult(){
-  const r = queryState.result;
-  if (!r.ok) return `<div class="alert alert-danger"><span>✕</span><span>Falha: ${escapeHTML(r.error)}</span></div>`;
-  if (Array.isArray(r.data)){
-    return `<div class="panel"><div class="panel-title">Resultado (${r.data.length})</div>
-      <div style="max-height:400px;overflow:auto"><pre style="font-size:12px;color:var(--text-primary);white-space:pre-wrap">${escapeHTML(JSON.stringify(r.data,null,2))}</pre></div></div>`;
-  }
-  const rows = Object.entries(r.data).filter(([k,v])=>typeof v!=='object' || v===null).map(([k,v])=>`<div class="detail-row"><span class="detail-label">${escapeHTML(k)}:</span><span class="detail-value">${escapeHTML(v ?? '—')}</span></div>`).join('');
-  return `<div class="panel"><div class="panel-title">Resultado <button class="btn btn-small btn-secondary" onclick="navigator.clipboard.writeText(JSON.stringify(queryState.result.data,null,2));toast('Copiado','success')">Copiar JSON</button></div>
-    ${rows}
-    <details style="margin-top:16px"><summary style="cursor:pointer;color:var(--teal-accent)">Dados completos</summary><pre style="font-size:11px;white-space:pre-wrap;margin-top:8px">${escapeHTML(JSON.stringify(r.data,null,2))}</pre></details>
-  </div>`;
+  const result = queryState.result;
+  if (!result?.ok) return `<div class="alert alert-danger"><span>${escapeHTML(result?.error || 'Consulta indisponível.')}</span></div>`;
+  return `<section class="panel"><h3>Resultado da consulta</h3>${window.SemperfiIntegrations.renderResult(result.data)}</section>`;
 }
-
-renderQueryResult = function(){
-  const r = queryState.result;
-  if (!r?.ok) return `<div class="alert alert-danger"><span>✕</span><span>Falha: ${escapeHTML(r?.error || 'Consulta inválida')}</span></div>`;
-  if (Array.isArray(r.data)){
-    return `<div class="panel"><div class="panel-title">Resultado (${r.data.length})</div>
-      <div style="max-height:400px;overflow:auto"><pre style="font-size:12px;color:var(--text-primary);white-space:pre-wrap">${escapeHTML(JSON.stringify(r.data,null,2))}</pre></div>
-      <div class="billing-toolbar mt-20"><button class="btn btn-secondary" onclick="enrichPublicQueryResult()">Registrar consulta no dossiê</button></div></div>`;
-  }
-  const rows = Object.entries(r.data).filter(([k,v])=>typeof v!=='object' || v===null).map(([k,v])=>`<div class="detail-row"><span class="detail-label">${escapeHTML(k)}:</span><span class="detail-value">${escapeHTML(v ?? '—')}</span></div>`).join('');
-  return `<div class="panel"><div class="panel-title">Resultado <button class="btn btn-small btn-secondary" onclick="navigator.clipboard.writeText(JSON.stringify(queryState.result.data,null,2));toast('Copiado','success')">Copiar JSON</button></div>
-    ${rows}
-    <details style="margin-top:16px"><summary style="cursor:pointer;color:var(--teal-accent)">Dados completos</summary><pre style="font-size:11px;white-space:pre-wrap;margin-top:8px">${escapeHTML(JSON.stringify(r.data,null,2))}</pre></details>
-    <div class="billing-toolbar mt-20"><button class="btn btn-secondary" onclick="enrichPublicQueryResult()">Registrar consulta no dossiê</button></div>
-  </div>`;
-};
 function enrichPublicQueryResult(){
   toast('O registro de consultas no dossiê ainda não está disponível. Nenhuma consulta foi gravada.', 'warning');
 }
@@ -1923,29 +1943,15 @@ async function handleFiles(files){
 
 function showFileDetail(id){
   const f = dbGet('files', id);
-  const procOpts = DB.processes.map(p=>`<option value="${p.id}" ${p.id===f.processId?'selected':''}>${escapeHTML(p.number)}</option>`).join('');
-  openModal({ wide:true, title:`Arquivo: ${f.name}`, body:`
-    <div class="form-row">
-      <div><div class="detail-row"><span class="detail-label">ID:</span><span class="detail-value">${f.id}</span></div>
-        <div class="detail-row"><span class="detail-label">Tipo MIME:</span><span class="detail-value">${escapeHTML(f.type)}</span></div>
-        <div class="detail-row"><span class="detail-label">Tamanho:</span><span class="detail-value">${(f.size/1024/1024).toFixed(3)} MB</span></div>
-        <div class="detail-row"><span class="detail-label">Análise:</span><span class="detail-value">${fmtDateTime(f.uploadedAt)}</span></div></div>
-      <div><div class="detail-row"><span class="detail-label">Hash SHA-256:</span></div>
-        <div style="word-break:break-all;font-family:'JetBrains Mono';font-size:11px;padding:8px;background:var(--obsidian);border-radius:4px">${f.hash}</div></div>
-    </div>
-    ${Object.keys(f.metadata||{}).length?`<h4 style="margin:16px 0 8px">Metadados extraídos</h4>${Object.entries(f.metadata).map(([k,v])=>`<div class="detail-row"><span class="detail-label">${k}:</span><span class="detail-value">${v}</span></div>`).join('')}`:''}
-    <h4 style="margin:16px 0 8px">Vincular a processo</h4>
-    <select class="form-select" id="f_linkProcess"><option value="">— nenhum —</option>${procOpts}</select>
-    <h4 style="margin:16px 0 8px">Etapas da análise local</h4>
-    <div class="timeline" style="font-size:12px">
-      <div class="timeline-item"><div class="timeline-date">${fmtDateTime(f.uploadedAt)}</div><div class="timeline-content">Arquivo selecionado para análise local</div></div>
-      <div class="timeline-item"><div class="timeline-date">${fmtDateTime(f.uploadedAt)}</div><div class="timeline-content">SHA-256 calculado via Web Crypto API</div></div>
-      <div class="timeline-item"><div class="timeline-date">Aguardando</div><div class="timeline-content">Registro no cofre indisponível nesta tela</div></div>
-    </div>
-  `, footer:`<button class="btn btn-secondary" onclick="closeModal()">Fechar</button><button class="btn btn-primary" onclick="linkFileToProcess('${id}')">Vincular ao processo</button>` });
-}
-function linkFileToProcess(id){
-  toast('A vinculação de arquivos a processos ainda não está disponível nesta tela. Nenhum vínculo foi gravado.', 'warning');
+  if (!f) { toast('Arquivo não encontrado.', 'warning'); return; }
+  openModal({wide:true, title:`Arquivo: ${escapeHTML(f.name)}`, body:`
+    <div class="detail-row"><span class="detail-label">Formato:</span><span class="detail-value">${escapeHTML(f.type || 'Não identificado')}</span></div>
+    <div class="detail-row"><span class="detail-label">Tamanho:</span><span class="detail-value">${(f.size/1024/1024).toFixed(3)} MB</span></div>
+    <div class="detail-row"><span class="detail-label">Analisado em:</span><span class="detail-value">${fmtDateTime(f.uploadedAt)}</span></div>
+    ${Object.keys(f.metadata||{}).length ? `<h3 class="mt-20">Informações do arquivo</h3>${Object.entries(f.metadata).map(([key,value])=>`<div class="detail-row"><span class="detail-label">${escapeHTML(({width:'Largura',height:'Altura',error:'Resultado'})[key] || key)}:</span><span class="detail-value">${escapeHTML(value)}</span></div>`).join('')}` : ''}
+    <details class="mt-20"><summary>Conferência de integridade</summary><p>Compare este código com o de outra cópia para verificar se os arquivos são idênticos.</p><p style="overflow-wrap:anywhere">SHA-256: <code>${escapeHTML(f.hash)}</code></p></details>
+    <p class="mt-20">Esta inspeção é temporária. Para guardar o original, envie o arquivo pelo formulário no início da página Arquivos.</p>`,
+    footer:`<button class="btn btn-secondary" onclick="closeModal()">Fechar</button><button class="btn btn-primary" onclick="closeModal();navigateSection('metadata')">Abrir envio de arquivo</button>`});
 }
 
 SECTION_RENDERERS.metadata = () => {
@@ -1953,7 +1959,7 @@ SECTION_RENDERERS.metadata = () => {
   return `
     <h1 class="page-title">Metadados e Arquivos</h1>
     <p class="page-subtitle">Análise local de arquivos com hash SHA-256 e metadados básicos</p>
-    <div class="alert alert-info mb-20"><span>ℹ️</span><span>Análise temporária no navegador: os arquivos não são enviados nem armazenados nesta tela. Os resultados serão perdidos ao recarregar. Para registrar evidências, use o espaço de investigação OSINT.</span></div>
+    <div class="alert alert-info mb-20"><span>ℹ️</span><span>Esta inspeção não salva o arquivo e será descartada ao recarregar. Para guardar o original, use o formulário de envio no início desta página.</span></div>
     <div class="panel mb-20">
       <div class="panel-title">Selecionar arquivos para análise local</div>
       <div class="upload-zone" id="uploadZone">
@@ -2054,6 +2060,7 @@ SECTION_RENDERERS.reports = () => `
 `;
 
 function generateReport(kind){
+  if (kind === 'auditoria') return window.SemperfiAudit.printReport();
   const now = new Date().toLocaleString('pt-BR');
   let html = `<!doctype html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Relatório ${escapeHTML(kind)}</title><style>body{font-family:Arial,sans-serif;padding:30px;color:#000}h1{border-bottom:2px solid #000;padding-bottom:8px}table{width:100%;border-collapse:collapse;margin:14px 0}th,td{border:1px solid #999;padding:6px;text-align:left;font-size:12px}th{background:#eee}.meta{color:#666;font-size:11px;margin-bottom:14px}</style></head><body>`;
   html += `<h1>SEMPER-FI — Relatório de ${escapeHTML(kind)}</h1><div class="meta">Gerado em ${now} por ${escapeHTML(SETTINGS.userName||'')}</div>`;
@@ -2072,16 +2079,12 @@ function generateReport(kind){
     DB.financial.forEach(f=>html+=`<tr><td>${fmtDate(f.date)}</td><td>${escapeHTML(f.type)}</td><td>${escapeHTML(f.description)}</td><td>${fmtMoney(f.amount)}</td><td>${escapeHTML(f.status)}</td></tr>`);
     html += `</table>`;
   } else if (kind==='intimacoes'){
-    html += `<table><tr><th>ID</th><th>Fonte</th><th>Tipo</th><th>Recebido</th><th>Processo</th><th>Status</th></tr>`;
-    DB.intimations.forEach(i=>{const p=dbGet('processes',i.processId);html+=`<tr><td>${i.id}</td><td>${escapeHTML(i.source)}</td><td>${escapeHTML(i.type)}</td><td>${fmtDateTime(i.receivedAt)}</td><td>${escapeHTML(p?.number||'—')}</td><td>${escapeHTML(i.status)}</td></tr>`;});
+    html += `<table><tr><th>Conteúdo</th><th>Fonte</th><th>Tipo</th><th>Recebido</th><th>Processo</th><th>Status</th></tr>`;
+    DB.intimations.forEach(i=>{const p=dbGet('processes',i.processId);html+=`<tr><td>${escapeHTML(i.content.slice(0,100))}</td><td>${escapeHTML(i.source)}</td><td>${escapeHTML(i.type)}</td><td>${fmtDateTime(i.receivedAt)}</td><td>${escapeHTML(p?.number||'—')}</td><td>${escapeHTML(i.status)}</td></tr>`;});
     html += `</table>`;
   } else if (kind==='clientes'){
     html += `<table><tr><th>Nome</th><th>Tipo</th><th>Documento</th><th>Responsável</th><th>Status</th><th>Processos</th></tr>`;
     DB.clients.forEach(c=>html+=`<tr><td>${escapeHTML(c.name)}</td><td>${escapeHTML(c.type)}</td><td>${escapeHTML(c.document)}</td><td>${escapeHTML(c.responsible||'')}</td><td>${escapeHTML(c.status)}</td><td>${DB.processes.filter(p=>p.clientId===c.id).length}</td></tr>`);
-    html += `</table>`;
-  } else if (kind==='auditoria'){
-    html += `<table><tr><th>Data/Hora</th><th>Ator</th><th>Módulo</th><th>Ação</th><th>Alvo</th><th>Resultado</th></tr>`;
-    DB.audit.slice(0,200).forEach(a=>html+=`<tr><td>${fmtDateTime(a.timestamp)}</td><td>${escapeHTML(a.actor)}</td><td>${escapeHTML(a.module)}</td><td>${escapeHTML(a.action)}</td><td>${escapeHTML(a.target)}</td><td>${escapeHTML(a.result)}</td></tr>`);
     html += `</table>`;
   }
   html += `<div style="margin-top:30px;font-size:10px;color:#666;border-top:1px solid #ccc;padding-top:10px">SEMPER-FI — Central Jurídica Operacional | Relatório técnico, sem valor probatório autônomo</div></body></html>`;
@@ -2137,7 +2140,7 @@ SECTION_RENDERERS.settings = () => `
       <div class="panel-title">👤 Conta</div>
       <div class="form-group"><label class="form-label">Nome</label><input class="form-input" id="s_name" readonly value="${escapeHTML(SETTINGS.userName||'')}"></div>
       <div class="form-group"><label class="form-label">E-mail</label><input class="form-input" type="email" id="s_email" readonly value="${escapeHTML(SETTINGS.userEmail||'')}"></div>
-      <div class="form-group"><label class="form-label">Perfil</label><input class="form-input" id="s_profile" readonly value="${escapeHTML(SETTINGS.userProfile || '')}"></div>
+      <div class="form-group"><label class="form-label">Perfil</label><input class="form-input" id="s_profile" readonly value="${escapeHTML(String(SETTINGS.userProfile||'').split(',').map(role=>({administrator:'Administrador',manager:'Gestor',lawyer:'Advogado',investigator:'Investigador',analyst:'Analista',auditor:'Auditor'})[role.trim()]||'Perfil da organização').join(', '))}"></div>
       <p class="text-muted">A conta e as permissões são gerenciadas pelo administrador.</p>
     </div>
     <div class="panel">
@@ -2148,13 +2151,9 @@ SECTION_RENDERERS.settings = () => `
       <button class="btn btn-secondary mt-12" type="button" data-a11y-open aria-controls="a11yDialog" aria-haspopup="dialog" aria-expanded="false">Aparência e acessibilidade</button>
     </div>
     <div class="panel">
-      <div class="panel-title">🔌 Integrações</div>
-      <div style="display:grid;gap:8px">
-        ${[{n:'DJe SP',d:'Diário de Justiça Eletrônico',s:'não verificada'},{n:'CNJ DataJud',d:'API pública de processos',s:'não verificada'},{n:'BrasilAPI',d:'CNPJ, CEP, Bancos, Feriados',s:'não verificada'},{n:'PJe',d:'Processo Judicial Eletrônico',s:'não integrada'},{n:'e-Saj',d:'Sistema TJSP',s:'não integrada'}].map(i=>`<div style="padding:10px;background:var(--obsidian);border-radius:6px;display:flex;justify-content:space-between;align-items:center;border-left:3px solid var(--${i.s==='ativo'?'success':'border-color'})">
-          <div><div style="font-weight:600">${i.n}</div><div class="text-muted" style="font-size:12px">${i.d}</div></div>
-          <span class="badge ${i.s==='ativo'?'badge-primary':'badge-warning'}">${i.s}</span>
-        </div>`).join('')}
-      </div>
+      <div class="panel-title">Serviços da organização</div>
+      <p>Consulte a disponibilidade e acompanhe os resultados na área de cada serviço.</p>
+      <div class="filter-bar"><button class="btn btn-secondary" onclick="navigateSection('queries')">Consultas públicas</button><button class="btn btn-secondary" onclick="navigateSection('agentes')">Assistência de IA</button><button class="btn btn-secondary" onclick="navigateSection('metadata')">Arquivos e evidências</button></div>
     </div>
     <div class="panel">
       <div class="panel-title">💾 Dados</div>
@@ -2165,12 +2164,9 @@ SECTION_RENDERERS.settings = () => `
         <div class="detail-row"><span class="detail-label">Compromissos:</span><span class="detail-value">${DB.appointments.length}</span></div>
         <div class="detail-row"><span class="detail-label">Intimações:</span><span class="detail-value">${DB.intimations.length}</span></div>
         <div class="detail-row"><span class="detail-label">Lançamentos:</span><span class="detail-value">${DB.financial.length}</span></div>
-        <div class="detail-row"><span class="detail-label">Arquivos:</span><span class="detail-value">${DB.files.length}</span></div>
-        <div class="detail-row"><span class="detail-label">Eventos de auditoria:</span><span class="detail-value">${DB.audit.length}</span></div>
-        <div class="detail-row"><span class="detail-label">Tamanho aproximado:</span><span class="detail-value">${(JSON.stringify(DB).length/1024).toFixed(1)} KB</span></div>
       </div>
       <div class="filter-bar mt-12">
-        <button class="btn btn-primary btn-small" onclick="exportAllJSON()">Exportar tudo</button>
+        <button class="btn btn-primary btn-small" onclick="exportAllJSON()">Exportar dados carregados</button>
         <button class="btn btn-secondary btn-small" onclick="document.getElementById('fileImport').click()">Importar clientes e processos</button>
       </div>
     </div>
@@ -2210,8 +2206,7 @@ document.getElementById('notificationBtn').onclick = (e) => {
   document.getElementById('profileMenu').classList.remove('active');
 };
 document.getElementById('clearNotifs').onclick = () => {
-  // marca todas as intimações como concluídas e prazos como visualizados
-  toast('Notificações são derivadas do estado - resolva os itens nas seções correspondentes','info');
+  document.getElementById('notifPanel').classList.remove('active');
 };
 document.getElementById('profileBtn').onclick = (e) => {
   e.stopPropagation();
@@ -2259,12 +2254,14 @@ document.getElementById('globalSearch').addEventListener('input', e=>{
   searchTimeout = setTimeout(()=>{ if (q.length>=2) runGlobalSearch(q); }, 250);
 });
 function runGlobalSearch(q){
+  q = String(q || '').trim().toLowerCase();
+  const contains = value => String(value || '').toLowerCase().includes(q);
   const results = [];
-  DB.clients.forEach(c=>{ if (c.name.toLowerCase().includes(q)||c.document.includes(q)||(c.email||'').toLowerCase().includes(q)) results.push({section:'clients',label:`👥 ${c.name}`,sub:c.document,id:c.id}); });
-  DB.processes.forEach(p=>{ if (p.number.toLowerCase().includes(q)||(p.notes||'').toLowerCase().includes(q)) results.push({section:'processes',label:`📋 ${p.number}`,sub:p.area+' • '+p.responsible,id:p.id}); });
-  DB.deadlines.forEach(d=>{ if (d.title.toLowerCase().includes(q)) results.push({section:'deadlines',label:`⏰ ${d.title}`,sub:fmtDate(d.date),id:d.id}); });
-  DB.intimations.forEach(i=>{ if (i.content.toLowerCase().includes(q)||i.source.toLowerCase().includes(q)) results.push({section:'intimations',label:`📧 ${i.source}`,sub:i.content.slice(0,50),id:i.id}); });
-  openModal({ title:`Busca: "${q}" — ${results.length} resultado(s)`, body: results.length?results.slice(0,30).map(r=>`<div style="padding:10px;background:var(--obsidian);border-radius:6px;margin-bottom:6px;cursor:pointer" onclick="closeModal();navigateSection('${r.section}')"><div style="font-weight:600">${r.label}</div><div class="text-muted" style="font-size:12px">${r.sub}</div></div>`).join(''):'<div class="empty-state"><div class="empty-state-icon">🔍</div><div class="empty-state-title">Nada encontrado</div></div>', footer:'<button class="btn btn-secondary" onclick="closeModal()">Fechar</button>' });
+  DB.clients.forEach(c=>{ if (contains(c.name)||contains(c.document)||contains(c.email)) results.push({section:'clients',label:`👥 ${c.name || 'Cliente'}`,sub:maskDoc(c.document || ''),id:c.id}); });
+  DB.processes.forEach(p=>{ if (contains(p.number)||contains(p.notes)) results.push({section:'processes',label:`📋 ${p.number}`,sub:[p.area,p.responsible].filter(Boolean).join(' • '),id:p.id}); });
+  DB.deadlines.forEach(d=>{ if (contains(d.title)) results.push({section:'deadlines',label:`⏰ ${d.title}`,sub:fmtDate(d.date),id:d.id}); });
+  DB.intimations.forEach(i=>{ if (contains(i.content)||contains(i.source)) results.push({section:'intimations',label:`📧 ${i.source || 'Intimação'}`,sub:String(i.content || '').slice(0,50),id:i.id}); });
+  openModal({ title:`Busca: "${escapeHTML(q)}" — ${results.length} resultado(s)`, body: results.length?results.slice(0,30).map(r=>`<button type="button" class="btn btn-secondary" style="display:block;width:100%;padding:10px;margin-bottom:6px;text-align:left;white-space:normal" onclick="closeModal();navigateSection('${r.section}')"><span style="display:block;font-weight:600">${escapeHTML(r.label)}</span><span class="text-muted" style="font-size:12px">${escapeHTML(r.sub)}</span></button>`).join(''):'<div class="empty-state"><div class="empty-state-icon">🔍</div><div class="empty-state-title">Nada encontrado</div></div>', footer:'<button class="btn btn-secondary" onclick="closeModal()">Fechar</button>' });
 }
 
 // ============================================================
@@ -2725,6 +2722,7 @@ function renderWorkspace(){
   const tabs = [
     {id:'overview', label:'Visão Geral'},
     {id:'plano', label:'Plano de Coleta'},
+    {id:'motores', label:'Planos TACER / SIERA'},
     {id:'entidades', label:'Entidades'},
     {id:'coletas', label:'Coletas'},
     {id:'achados', label:'Achados'},
@@ -2742,10 +2740,15 @@ function renderWorkspace(){
   const r = WORKSPACE_RENDERERS[osintState.workspaceTab];
   if (r) content = r(inv, {cli, pro, isReadOnly});
 
-  openModal({ wide:true, title:`🕵️ ${escapeHTML(inv.title)} ${statusChip(inv.status)} ${isReadOnly?'<span class="badge badge-warning">Somente leitura</span>':''}`, body: tabsHTML + content, footer:`<button class="btn btn-secondary" onclick="closeModal()">Fechar</button>` });
+  openModal({ wide:true, title:`🕵️ ${escapeHTML(inv.title)} ${statusChip(inv.status)} ${isReadOnly?'<span class="badge badge-warning">Somente leitura</span>':''}`, body: tabsHTML + content, footer:`<button class="btn btn-secondary" onclick="closeModal()">Fechar</button>`,
+    onMount(modal){
+      if(osintState.workspaceTab==='motores') window.SemperfiInvestigationEngines.mount(modal.querySelector('#investigationEngines'),{api:backendApi,investigations:[{...inv,scope_codes:inv.scope||[]}],canWrite:!isReadOnly&&canEditLegalRecords(),masked:SETTINGS.masked});
+    }
+  });
 }
 
 const WORKSPACE_RENDERERS = {};
+WORKSPACE_RENDERERS.motores = () => '<section id="investigationEngines" aria-label="Planos TACER e SIERA"></section>';
 
 WORKSPACE_RENDERERS.overview = (inv, ctx) => {
   const ents = DB.osintEntities.filter(e=>e.investigationId===inv.id).length;
@@ -2804,7 +2807,6 @@ WORKSPACE_RENDERERS.entidades = (inv, ctx) => {
         <td>${((e.confidence||0)*100).toFixed(0)}%</td>
         <td><div class="row-actions">
           ${!ctx.isReadOnly?`<button class="btn btn-small btn-primary" onclick="runAgentsForEntity('${inv.id}','${e.id}')">▶ Coletar</button>`:''}
-          ${!ctx.isReadOnly?`<button class="btn btn-small btn-danger" onclick="if(confirm('Excluir entidade?')){dbDelete('osintEntities','${e.id}');osintAudit('exclusao_logica','${inv.id}',{entityId:'${e.id}'});toast('Excluída','success');renderWorkspace();}">×</button>`:''}
         </div></td>
       </tr>`).join('')}
     </tbody></table>`:'<div class="empty-state" style="padding:24px"><div class="text-muted">Nenhuma entidade. Adicione um alvo investigado.</div></div>'}
@@ -2921,10 +2923,7 @@ WORKSPACE_RENDERERS.relatorio = (inv) => {
 };
 
 WORKSPACE_RENDERERS.auditoria = (inv) => {
-  const events = DB.audit.filter(a=>a.module==='osint' && a.osintMeta?.investigationId===inv.id).sort((a,b)=>b.timestamp-a.timestamp);
-  return events.length?`<table style="font-size:11px"><thead><tr><th>Data/Hora</th><th>Ator</th><th>Ação</th><th>Resultado</th><th>Correlação</th></tr></thead><tbody>
-    ${events.map(e=>`<tr><td>${fmtDateTime(e.timestamp)}</td><td>${escapeHTML(e.actor)}</td><td>${escapeHTML(e.action)}</td><td>${escapeHTML(e.result)}</td><td style="font-family:'JetBrains Mono';font-size:10px">${escapeHTML(e.correlationId)}</td></tr>`).join('')}
-  </tbody></table>`:'<div class="text-muted">Sem eventos.</div>';
+  return '<h3>Histórico de atividades</h3><p>Consulte os registros da organização na área de auditoria. O acesso depende das permissões da sua conta.</p><button class="btn btn-secondary" onclick="closeModal();navigateSection(\'audit\')">Abrir auditoria</button>';
 };
 
 // ============================================================
@@ -2949,7 +2948,7 @@ function openEntityForm(investigationId){
       <div class="form-group"><label class="form-label">Confiança inicial</label><select class="form-select" id="ent_conf"><option value="0.5">50% — preliminar</option><option value="0.7" selected>70% — esperada</option><option value="0.9">90% — alta</option></select></div>
     </div>
     <div class="form-group"><label class="form-label">Nome / Razão Social *</label><input class="form-input" id="ent_name"></div>
-    <div class="form-group"><label class="form-label">Documento (CPF/CNPJ/processo/domínio)</label><input class="form-input" id="ent_doc" placeholder="Será mascarado e fingerprinted nos logs"></div>
+    <div class="form-group"><label class="form-label">Documento (CPF/CNPJ/processo/domínio)</label><input class="form-input" id="ent_doc" placeholder="Informe o documento ou domínio do alvo"></div>
     <div class="form-group"><label class="form-label">Aliases (separados por vírgula)</label><input class="form-input" id="ent_aliases"></div>
     <div class="form-group"><label class="form-label">Notas</label><textarea class="form-textarea" id="ent_notes"></textarea></div>
   `, footer:`<button class="btn btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" onclick="saveEntity('${investigationId}')">Salvar</button>` });
@@ -3257,6 +3256,7 @@ async function promoteFindingToEvidence(findingId){
       const result = await createBackendEvidenceRecord({
         investigationId: f.investigationId,
         findingId,
+        existingEvidenceId: f.evidenceIds?.[0] || null,
         sourceName: src?.name || f.title || f.type,
         sourceType: src?.connectorType || 'connector_output',
         sourceUrl: run?.sourceUrl || '',
@@ -3265,7 +3265,7 @@ async function promoteFindingToEvidence(findingId){
         filename: `finding-${findingId}.json`,
         mimeType: 'application/json'
       });
-      toast(result.warning ? `Achado promovido com pendência de preservação: ${result.warning}` : 'Achado promovido a evidência','success');
+      toast(result.warning ? `Arquivo recebido, com etapa pendente: ${result.warning}` : 'Achado promovido a evidência', result.warning ? 'warning' : 'success');
       renderWorkspace();
     } catch(err){
       toast(apiErrorMessage(err),'error');
@@ -3325,7 +3325,7 @@ async function saveManualEvidence(investigationId){
         filename: `manual-${Date.now()}.txt`,
         mimeType: 'text/plain'
       });
-      toast(result.warning ? `Evidência registrada com pendência de preservação: ${result.warning}` : 'Evidência registrada','success');
+      toast(result.warning ? `Arquivo recebido, com etapa pendente: ${result.warning}` : 'Evidência preservada', result.warning ? 'warning' : 'success');
       closeModal();
       renderWorkspace();
     } catch(err){
@@ -3608,6 +3608,8 @@ Gerado por: ${escapeHTML(SETTINGS.userName||'')} em ${now}
   }
 
   const w = window.open('','_blank');
+  if (!w) { toast('O rascunho foi preparado. Permita abrir a janela de impressão e consulte os relatórios registrados na API.', 'warning'); return; }
+  w.opener = null;
   w.document.write(html); w.document.close();
   setTimeout(()=>w.print(), 600);
   osintAudit('geracao_relatorio', investigationId, {reportHash:reportHash.slice(0,16), verificationCode});
@@ -3637,8 +3639,8 @@ const osintToolsState = { selected:null, lastResult:null, loading:false };
 
 SECTION_RENDERERS.osinttools = () => `
   <h1 class="page-title">⚒️ OSINT Tools</h1>
-  <p class="page-subtitle">Ferramentas determinísticas (regex/parsing/HTTP) — IA só entra na análise de relevância. Custo computacional mínimo.</p>
-  <div class="alert alert-info"><span>ℹ️</span><span><strong>Arquitetura híbrida:</strong> consultas factuais via APIs públicas (zero IA). LLM só é invocado se você clicar "Analisar com IA" no resultado.</span></div>
+  <p class="page-subtitle">Consulte informações públicas e revise os resultados antes de utilizá-los na investigação.</p>
+  <p>“Analisar com IA” prepara o resultado para revisão na área de assistência. A análise começa somente após sua confirmação nessa área.</p>
   <div class="panel mb-20">
     <div class="panel-title">Selecione a ferramenta</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">
@@ -3653,7 +3655,7 @@ SECTION_RENDERERS.osinttools = () => `
 `;
 SECTION_AFTER.osinttools = () => {};
 
-function selectOsintTool(id){ osintToolsState.selected = id; osintToolsState.lastResult=null; renderSection('osinttools'); }
+function selectOsintTool(id){ if(osintToolsState.loading || osintToolsState.preserving)return; osintToolsState.selected = id; osintToolsState.lastResult=null; osintToolsState.target=''; osintToolsState.consent=false; renderSection('osinttools'); }
 
 function renderOsintToolPanel(){
   const t = OSINT_TOOLS.find(x=>x.id===osintToolsState.selected);
@@ -3668,10 +3670,10 @@ function renderOsintToolPanel(){
     <div class="panel">
       <div class="panel-title">${t.icon} ${escapeHTML(t.name)}</div>
       <div class="form-group"><label class="form-label">Alvo</label>
-        <input class="form-input" id="otTarget" placeholder="${placeholders[t.kind]||''}">
+        <input class="form-input" id="otTarget" value="${escapeHTML(osintToolsState.target || '')}" placeholder="${placeholders[t.kind]||''}">
       </div>
       <div class="form-group"><label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-secondary);cursor:pointer">
-        <input type="checkbox" id="otConsent" checked> Declaro finalidade legítima (consulta auditada)
+        <input type="checkbox" id="otConsent" ${osintToolsState.consent ? 'checked' : ''}> Declaro finalidade legítima para a consulta
       </label></div>
       <button class="btn btn-primary" onclick="runOsintTool()" ${osintToolsState.loading?'disabled':''}>${osintToolsState.loading?'<span class="spinner"></span> Consultando...':'Executar'}</button>
       <div id="otResult" class="mt-20">${osintToolsState.lastResult?renderOsintToolResult():''}</div>
@@ -3680,42 +3682,56 @@ function renderOsintToolPanel(){
 }
 
 async function runOsintTool(){
+  if (osintToolsState.loading || osintToolsState.preserving) return;
   const t = OSINT_TOOLS.find(x=>x.id===osintToolsState.selected);
   const val = document.getElementById('otTarget').value.trim();
   const consent = document.getElementById('otConsent').checked;
   if (!val){ toast('Informe o alvo','error'); return; }
   if (!consent){ toast('Marque a declaração','error'); return; }
-  osintToolsState.loading = true; renderSection('osinttools');
+  osintToolsState.target=val; osintToolsState.consent=consent;
+  osintToolsState.loading = true; osintToolsState.lastResult=null; renderSection('osinttools');
   try {
     const result = await dispatchOsintTool(t.kind, val);
     osintToolsState.lastResult = { tool:t, target:val, data:result, at:Date.now(), ok:true };
-    audit('osinttools', t.kind, val, 'sucesso');
-    toast('Consulta concluída','success');
+    audit('osinttools', t.kind, val, result.partial ? 'parcial' : 'sucesso');
+    toast(result.partial ? 'Consulta parcial. Confira as fontes que não responderam.' : 'Consulta concluída', result.partial ? 'warning' : 'success');
   } catch(e){
     osintToolsState.lastResult = { tool:t, target:val, error:e.message, at:Date.now(), ok:false };
     audit('osinttools', t.kind, val, 'erro');
     toast('Erro: '+e.message,'error');
   }
-  osintToolsState.loading = false; renderSection('osinttools');
+  osintToolsState.loading = false;
+  if (appState.currentSection === 'osinttools') renderSection('osinttools');
 }
 
 async function dispatchOsintTool(kind, value){
-  const j = async (url, opts) => { const r = await fetch(url, opts); if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); };
-  const t = async (url) => { const r = await fetch(url); if(!r.ok) throw new Error('HTTP '+r.status); return r.text(); };
+  const request = (url, opts={}) => fetch(url, {...opts,signal:AbortSignal.timeout(15000)});
+  const j = async (url, opts) => { const r = await request(url, opts); if(!r.ok) throw new Error('A fonte não conseguiu concluir a consulta. Tente novamente mais tarde.'); return r.json(); };
   switch(kind){
     case 'dns': case 'domain': {
       const types = ['A','AAAA','MX','NS','TXT','CNAME','SOA'];
-      const out = {};
+      const out = {}, unavailable = [];
+      let answered = 0;
       for (const type of types){
-        try { const d = await j(`https://dns.google/resolve?name=${encodeURIComponent(value)}&type=${type}`); out[type] = (d.Answer||[]).map(a=>a.data); } catch(_){ out[type]=[]; }
+        try {
+          const d = await j(`https://dns.google/resolve?name=${encodeURIComponent(value)}&type=${type}`);
+          if (![0,3].includes(d.Status)) throw new Error('DNS indisponível');
+          out[type] = (d.Answer||[]).map(a=>a.data); answered++;
+        } catch(_){ unavailable.push(type); }
       }
+      if (!answered) throw new Error('Não foi possível consultar os registros DNS. Nenhum resultado foi confirmado.');
       if (kind==='domain'){
-        try { const cert = await j(`https://crt.sh/?q=${encodeURIComponent(value)}&output=json`); out.certificates = (cert||[]).slice(0,10); } catch(_){}
-        try { const wb = await j(`https://archive.org/wayback/available?url=${encodeURIComponent(value)}`); out.wayback = wb; } catch(_){}
+        try { const cert = await j(`https://crt.sh/?q=${encodeURIComponent(value)}&output=json`); out.certificates = (cert||[]).slice(0,10); } catch(_){ unavailable.push('Certificados'); }
+        try { const wb = await j(`https://archive.org/wayback/available?url=${encodeURIComponent(value)}`); out.wayback = wb; } catch(_){ unavailable.push('Arquivo histórico'); }
       }
+      if (unavailable.length) { out.partial = true; out.limitations = [`Não foi possível consultar: ${unavailable.join(', ')}. Ausência de resposta não significa ausência de registros.`]; }
       return out;
     }
-    case 'ip': return await j(`https://ip-api.com/json/${encodeURIComponent(value)}?fields=66846719`);
+    case 'ip': {
+      const data = await j(`https://ip-api.com/json/${encodeURIComponent(value)}?fields=66846719`);
+      if (data.status === 'fail') throw new Error('A fonte não confirmou informações para este endereço IP.');
+      return data;
+    }
     case 'email': return await j(`https://api.eva.pingutil.com/email?email=${encodeURIComponent(value)}`);
     case 'github': return await j(`https://api.github.com/users/${encodeURIComponent(value)}`);
     case 'cep': {
@@ -3735,30 +3751,46 @@ async function dispatchOsintTool(kind, value){
     }
     case 'urlthreat': {
       const fd = new FormData(); fd.append('url', value);
-      const r = await fetch('https://urlhaus-api.abuse.ch/v1/url/', {method:'POST', body:fd});
-      return await r.json();
+      const data = await j('https://urlhaus-api.abuse.ch/v1/url/', {method:'POST', body:fd});
+      if (!['ok','no_results'].includes(data.query_status)) throw new Error('A fonte não confirmou a verificação desta URL.');
+      return data;
     }
     case 'username': {
       const sites = [
-        {name:'GitHub', url:`https://api.github.com/users/${value}`},
-        {name:'GitLab', url:`https://gitlab.com/api/v4/users?username=${value}`}
+        {name:'GitHub', url:`https://api.github.com/users/${encodeURIComponent(value)}`},
+        {name:'GitLab', url:`https://gitlab.com/api/v4/users?username=${encodeURIComponent(value)}`}
       ];
       const out = {};
-      for (const s of sites){ try { const r = await fetch(s.url); out[s.name] = { found: r.ok, status:r.status }; } catch(e){ out[s.name] = { error: e.message }; } }
+      let answered = 0;
+      const unavailable = [];
+      for (const s of sites){
+        try {
+          const r = await request(s.url);
+          if (r.status === 404) { out[s.name] = {found:false}; answered++; continue; }
+          if (!r.ok) throw new Error('Fonte indisponível');
+          const data = await r.json();
+          if (s.name === 'GitLab' && !Array.isArray(data)) throw new Error('Resposta inválida');
+          out[s.name] = {found:s.name === 'GitLab' ? data.some(user=>String(user.username||'').toLowerCase()===value.toLowerCase()) : Boolean(data.login)};
+          answered++;
+        } catch(_){ unavailable.push(s.name); }
+      }
+      if (!answered) throw new Error('As fontes não responderam. Nenhum perfil foi confirmado.');
+      if (unavailable.length) { out.partial = true; out.limitations = [`Fontes indisponíveis: ${unavailable.join(', ')}.`]; }
+      const username = encodeURIComponent(value);
       out.manual_check = [
-        `https://twitter.com/${value}`, `https://instagram.com/${value}`,
-        `https://reddit.com/user/${value}`, `https://linkedin.com/in/${value}`,
-        `https://gitlab.com/${value}`, `https://keybase.io/${value}`
+        `https://twitter.com/${username}`, `https://instagram.com/${username}`,
+        `https://reddit.com/user/${username}`, `https://linkedin.com/in/${username}`,
+        `https://gitlab.com/${username}`, `https://keybase.io/${username}`
       ];
       return out;
     }
     case 'headers': {
       // CORS pode bloquear — fallback: instruções manuais
       try {
-        const r = await fetch(value, {method:'HEAD', mode:'cors'});
+        const r = await request(value, {method:'HEAD', mode:'cors'});
         const h = {}; r.headers.forEach((v,k)=>h[k]=v);
         return { status:r.status, headers:h };
-      } catch(e){ throw new Error('CORS bloqueia análise direta. Use curl -I no terminal.'); }
+      } catch(e){ throw new Error('Este site não permite a consulta pelo navegador. Solicite a verificação ao administrador.'); }
     }
     case 'crt': {
       const data = await j(`https://crt.sh/?q=${encodeURIComponent(value)}&output=json`);
@@ -3773,26 +3805,23 @@ async function dispatchOsintTool(kind, value){
 
 function renderOsintToolResult(){
   const r = osintToolsState.lastResult;
-  if (!r.ok) return `<div class="alert alert-danger"><span>✕</span><span>${escapeHTML(r.error)}</span></div>`;
-  const pre = document.createElement('pre');
-  pre.style.cssText='font-size:11px;white-space:pre-wrap;max-height:400px;overflow:auto;padding:12px;background:var(--obsidian);border-radius:6px;color:var(--text-primary)';
-  pre.textContent = JSON.stringify(r.data, null, 2);
-  setTimeout(()=>{ const wrap=document.getElementById('otRawWrap'); if(wrap){ wrap.innerHTML=''; wrap.appendChild(pre);} },0);
+  if (!r.ok) return `<div class="alert alert-danger"><span>✕</span><span>${escapeHTML(apiErrorMessage(r.error))}</span></div>`;
   return `
-    <div class="alert alert-success"><span>✓</span><span>Consulta em ${new Date(r.at).toLocaleTimeString('pt-BR')} • Alvo: <strong>${escapeHTML(r.target)}</strong></span></div>
+    <div class="alert ${r.data.partial ? 'alert-warning' : 'alert-success'}"><span>${r.data.partial ? '⚠' : '✓'}</span><span>${r.data.partial ? 'Consulta parcial' : 'Consulta concluída'} em ${new Date(r.at).toLocaleTimeString('pt-BR')} • Alvo: <strong>${escapeHTML(r.target)}</strong></span></div>
     <div class="filter-bar">
-      <button class="btn btn-secondary btn-small" onclick="navigator.clipboard.writeText(JSON.stringify(osintToolsState.lastResult.data,null,2));toast('Copiado','success')">📋 Copiar JSON</button>
-      <button class="btn btn-secondary btn-small" onclick="preserveOsintResult()">🔒 Preservar como evidência</button>
+      <button class="btn btn-secondary btn-small" onclick="preserveOsintResult()" ${osintToolsState.preserving || r.preserved ? 'disabled' : ''}>${r.preserved ? '✓ Evidência preservada' : osintToolsState.preserving ? 'Preservando…' : r.evidenceId ? 'Retomar preservação' : '🔒 Preservar como evidência'}</button>
       <button class="btn btn-primary btn-small" onclick="analyzeWithAI()">🤖 Analisar com IA</button>
     </div>
-    <div id="otRawWrap" class="mt-12"></div>
+    <div id="otRawWrap" class="mt-12">${window.SemperfiIntegrations.renderResult(r.data)}</div>
   `;
 }
 
 async function preserveOsintResult(){
   const r = osintToolsState.lastResult;
+  if (!r?.ok || osintToolsState.preserving || r.preserved) return;
   const content = JSON.stringify(r.data);
   if (isBackendMode()){
+    osintToolsState.preserving = true; renderSection('osinttools');
     try {
       const result = await createBackendEvidenceRecord({
         investigationId: null,
@@ -3804,21 +3833,30 @@ async function preserveOsintResult(){
         filename: `osint-tool-${Date.now()}.json`,
         mimeType: 'application/json'
       });
-      toast(result.warning ? `Evidência preservada com pendência: ${result.warning}` : 'Evidência preservada','success');
-      audit('osinttools','preservacao_evidencia',r.tool.kind+':'+r.target,'sucesso');
+      r.evidenceId = result.evidenceId; r.preserved = result.preserved;
+      toast(result.warning ? `Arquivo recebido, com etapa pendente: ${result.warning}` : 'Evidência preservada', result.warning ? 'warning' : 'success');
+      audit('osinttools','preservacao_evidencia',r.tool.kind+':'+r.target,result.preserved ? 'sucesso' : 'pendente');
     } catch(err){
       toast(apiErrorMessage(err),'error');
+    } finally {
+      osintToolsState.preserving = false;
+      if (appState.currentSection === 'osinttools') renderSection('osinttools');
     }
     return;
   }
-  const sha256 = await sha256Hex(content);
-  toast(`Evidência preservada (SHA-256: ${sha256.slice(0,16)}...)`,'success');
-  audit('osinttools','preservacao_evidencia',r.tool.kind+':'+r.target,'sucesso');
+  toast('Conecte-se ao sistema para registrar e preservar a evidência.','warning');
 }
 
 function analyzeWithAI(){
-  toast('IA premium ainda não configurada. Nenhum resultado foi gerado.','info');
-  // Em produção: POST /api/ai/analyze com payload mínimo (não envia raw)
+  const result = osintToolsState.lastResult;
+  if (!result?.ok) { toast('Faça uma consulta antes de preparar a análise.', 'warning'); return; }
+  const text = JSON.stringify(result.data, null, 2);
+  if (text.length > 12000) { toast('O resultado excede o limite de análise. Selecione um trecho de até 12.000 caracteres em Agentes IA.', 'warning'); return; }
+  navigateSection('agentes');
+  document.getElementById('agentType').value = 'correlation';
+  const input = document.getElementById('agentInput');
+  input.value = text; input.focus();
+  toast('Revise o conteúdo e informe a finalidade e a autorização antes de iniciar a análise.', 'info');
 }
 // ============================================================
 //          CENTRAL DE AGENTES IA — 16 agentes especializados
@@ -4053,91 +4091,7 @@ const RADAR_VOCAB = {
   }
 };
 
-const radarState = { query:'', tipo:'cnpj', result:null, loading:false };
-
-SECTION_RENDERERS.societario = () => `
-  <h1 class="page-title">🏢 Radar Societário ABDCRIM</h1>
-  <p class="page-subtitle">Mapa relacional empresarial. Cada vínculo classificado em <strong>Confirmado / Provável / Indiciário</strong> com fonte documental.</p>
-  <div class="alert alert-warning"><span>⚠️</span><span><strong>Regra:</strong> nenhuma relação é afirmada como fato sem fonte objetiva. Vínculos por sócios comuns, endereço, telefone ou CNAE são <em>indícios</em> até validação.</span></div>
-  <div class="panel mb-20">
-    <div class="panel-title">Consulta</div>
-    <div class="filter-bar">
-      <select class="form-select" id="radTipo">
-        <option value="cnpj" ${radarState.tipo==='cnpj'?'selected':''}>CNPJ</option>
-        <option value="cpf" ${radarState.tipo==='cpf'?'selected':''}>CPF</option>
-        <option value="nome" ${radarState.tipo==='nome'?'selected':''}>Nome / Razão Social</option>
-        <option value="endereco" ${radarState.tipo==='endereco'?'selected':''}>Endereço</option>
-      </select>
-      <input class="form-input grow" id="radQuery" placeholder="Ex: 12.345.678/0001-90" value="${escapeHTML(radarState.query)}">
-      <button class="btn btn-primary" onclick="radarConsultar()" ${radarState.loading?'disabled':''}>${radarState.loading?'<span class="spinner"></span>':'🔍 Mapear'}</button>
-    </div>
-  </div>
-  ${radarState.result ? renderRadarResult() : `<div class="empty-state"><div class="empty-state-icon">🔭</div><div class="empty-state-title">Consulte um CNPJ, CPF ou nome</div><div class="empty-state-text">O sistema busca dados públicos e infere vínculos com classificação rigorosa.</div></div>`}
-`;
-SECTION_AFTER.societario = () => {
-  document.getElementById('radTipo').onchange = e => { radarState.tipo = e.target.value; renderSection('societario'); };
-};
-
-async function radarConsultar(skipBilling=false){
-  const q = document.getElementById('radQuery').value.trim();
-  if (!q){ toast('Informe o alvo','error'); return; }
-  if (radarState.tipo === 'cnpj' && q.replace(/\D/g,'').length !== 14){ toast('CNPJ deve ter 14 dígitos','error'); return; }
-  if (radarState.tipo === 'cpf' && q.replace(/\D/g,'').length !== 11){ toast('CPF deve ter 11 dígitos','error'); return; }
-  if (!skipBilling){
-    openCreditConsumptionModal('corporate_map', {
-      module:'societario',
-      reference:`radar-${Date.now()}`,
-      title:'Confirmar mapa societário e vínculos empresariais',
-      description:'O radar societário estrutura o mapa relacional, preserva a trilha técnica e prepara o reaproveitamento investigativo do resultado.',
-      onConfirmed: async () => { await radarConsultar(true); }
-    });
-    return;
-  }
-  radarState.query = q;
-  radarState.loading = true; renderSection('societario');
-  try {
-    if (radarState.tipo === 'cnpj'){
-      const cnpj = q.replace(/\D/g,'');
-      if (cnpj.length !== 14) throw new Error('CNPJ deve ter 14 dígitos');
-      const data = await fetch(`https://brasilapi.com.br/api/cnpj/v1/${cnpj}`).then(r=>{if(!r.ok)throw new Error('CNPJ não encontrado');return r.json();});
-      radarState.result = await buildRadarFromCNPJ(data);
-    } else if (radarState.tipo === 'cpf'){
-      const cpf = q.replace(/\D/g,'');
-      if (cpf.length !== 11) throw new Error('CPF deve ter 11 dígitos');
-      radarState.result = { tipo:'cpf', cpf,
-        valido: validaCPF(cpf),
-        nota:'Busca de participações por CPF requer convênio Receita Federal (backend).',
-        sugestoes:[
-          {fonte:'Casa dos Dados', url:`https://casadosdados.com.br/pesquisa-cpf/${cpf}`},
-          {fonte:'Escavador', url:`https://www.escavador.com/sobre/pesquisar?q=${cpf}`},
-          {fonte:'Jusbrasil', url:`https://www.jusbrasil.com.br/busca?q=${cpf}`}
-        ]
-      };
-    } else if (radarState.tipo === 'nome'){
-      radarState.result = { tipo:'nome', nome:q,
-        nota:'Busca por nome em fontes públicas. Para participações societárias, requer backend com base CNPJ indexada.',
-        sugestoes:[
-          {fonte:'Receita Federal — Consulta CNPJ', url:`https://solucoes.receita.fazenda.gov.br/servicos/cnpjreva/cnpjreva_solicitacao.asp`},
-          {fonte:'Casa dos Dados', url:`https://casadosdados.com.br/pesquisa-empresa/${encodeURIComponent(q)}`},
-          {fonte:'Cadastro Nacional de Empresas', url:`https://servicodados.ibge.gov.br/api/v2/cnae/classes`}
-        ]
-      };
-    } else if (radarState.tipo === 'endereco'){
-      try {
-        const geo = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=3`).then(r=>r.json());
-        radarState.result = { tipo:'endereco', endereco:q, geocoding:geo,
-          nota:'Cruzamento de empresas por endereço requer base CNPJ indexada (backend).' };
-      } catch(e){ throw new Error('Falha no geocoding: '+e.message); }
-    }
-    audit('societario', 'consulta', q, 'sucesso');
-    toast('Mapeamento concluído','success');
-  } catch(e){
-    radarState.result = { erro: e.message };
-    audit('societario', 'consulta', q, 'erro');
-    toast('Erro: '+e.message,'error');
-  }
-  radarState.loading = false; renderSection('societario');
-}
+const radarState = {result:null};
 
 async function buildRadarFromCNPJ(data){
   const socios = (data.qsa||[]).map(s => ({
@@ -4215,7 +4169,7 @@ function renderRadarResult(){
       <div class="form-row">
         <div>
           <div class="detail-row"><span class="detail-label">Nome fantasia:</span><span class="detail-value">${escapeHTML(e.nome_fantasia||'—')}</span></div>
-          <div class="detail-row"><span class="detail-label">CNPJ:</span><span class="detail-value masked">${escapeHTML(r.cnpj)}</span></div>
+          <div class="detail-row"><span class="detail-label">CNPJ:</span><span class="detail-value masked">${escapeHTML(maskDoc(r.cnpj))}</span></div>
           <div class="detail-row"><span class="detail-label">Data abertura:</span><span class="detail-value">${escapeHTML(e.data_abertura||'—')}</span></div>
           <div class="detail-row"><span class="detail-label">Porte:</span><span class="detail-value">${escapeHTML(e.porte||'—')}</span></div>
           <div class="detail-row"><span class="detail-label">Capital social:</span><span class="detail-value">${fmtMoney(e.capital_social||0)}</span></div>
@@ -4238,7 +4192,7 @@ function renderRadarResult(){
         ${r.socios.length?r.socios.map(s=>`<div style="padding:10px;background:var(--obsidian);border-radius:6px;margin-bottom:6px;border-left:3px solid ${RADAR_VOCAB.vinculo[s.vinculo].color}">
           <div style="font-weight:600">${escapeHTML(s.nome)} <span class="badge badge-primary" style="margin-left:6px">${RADAR_VOCAB.classificacao[s.classificacao].label}</span></div>
           <div class="text-muted" style="font-size:11px">${escapeHTML(s.qualificacao)} • desde ${escapeHTML(s.data_entrada||'—')}</div>
-          ${s.cpf_cnpj_socio!=='—'?`<div style="font-family:'JetBrains Mono';font-size:10px;color:var(--gold-accent);margin-top:4px">${escapeHTML(s.cpf_cnpj_socio)}</div>`:''}
+          ${s.cpf_cnpj_socio!=='—'?`<div style="font-family:'JetBrains Mono';font-size:10px;color:var(--gold-accent);margin-top:4px">${escapeHTML(maskDoc(s.cpf_cnpj_socio))}</div>`:''}
         </div>`).join(''):'<div class="text-muted">Sem sócios listados na BrasilAPI</div>'}
       </div>
 
@@ -4268,8 +4222,8 @@ function renderRadarResult(){
     </div>
 
     <div class="filter-bar mt-20">
-      <button class="btn btn-primary" onclick="radarParaInvestigacao()">🕵️ Criar investigação a partir deste mapa</button>
-      <button class="btn btn-secondary" onclick="navigator.clipboard.writeText(JSON.stringify(radarState.result,null,2));toast('Copiado','success')">📋 Copiar JSON</button>
+      <button class="btn btn-primary" onclick="radarParaInvestigacao()">🕵️ Preparar cadastro de investigação</button>
+      <p>Abre o cadastro com o nome da empresa e o escopo sugerido para sua revisão.</p>
     </div>
   `;
 }
@@ -4286,7 +4240,7 @@ function renderRadarGraph(g){
     <text text-anchor="middle" dy="4" fill="#e6edf3" font-size="${isMain?12:10}" font-weight="700">${escapeHTML((n.label||'').slice(0,18))}</text>
     <title>${escapeHTML(n.label)}</title>
   </g>`; }).join('');
-  return `<svg width="${W}" height="${H}" style="background:var(--obsidian);border-radius:6px;width:100%;max-width:${W}px">${edges}${nodes}</svg>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Mapa dos sócios e da empresa consultada" style="background:var(--obsidian);border-radius:6px;width:100%;height:auto;max-width:${W}px">${edges}${nodes}</svg>`;
 }
 
 function radarParaInvestigacao(){
@@ -4603,7 +4557,7 @@ SECTION_RENDERERS.conhecimento = () => {
       </tbody></table>
       <div class="text-muted mt-12" style="font-size:11px">${filtered.length} de ${data.length}</div>
     </div>
-    <div class="alert alert-info mt-20"><span>📖</span><span><strong>Como o SEMPER-FI usa estas normas:</strong> O framework TACER (Target → Acquire → Correlate → Evaluate → Report) opera como ciclo equivalente ao processo da ISO/IEC 27037. Cadeia de custódia WORM segue ISO 22095 + CPP Arts. 158-A a 158-F. Evidências preservadas com SHA-256 conforme ABNT NBR ISO/IEC 27037:2013.</span></div>
+    <p class="text-muted mt-20">Referências para consulta profissional. Confira a edição, a vigência e a aplicabilidade na fonte oficial antes de utilizar. O catálogo não certifica conformidade do sistema nem substitui o texto integral.</p>
   `;
 };
 SECTION_AFTER.conhecimento = () => {
@@ -4632,130 +4586,14 @@ const NATO_ADMIRALTY = {
   info:  {'1':'Confirmada','2':'Provavelmente verdadeira','3':'Possivelmente verdadeira','4':'Duvidosa','5':'Improvável','6':'Não pode ser julgada'}
 };
 
-WORKSPACE_RENDERERS.plano = (inv, ctx) => {
-  // Sobrescreve o renderer de "Plano de Coleta" para incluir TACER
-  const runs = DB.osintRuns.filter(r=>r.investigationId===inv.id);
-  const tacerState = inv.tacerState || {};
-  return `
-    <div class="alert alert-info"><span>📋</span><span><strong>Framework TACER:</strong> 5 fases iterativas com listas de verificação e referências normativas.</span></div>
-    <div class="alert alert-warning"><span>ℹ️</span><span>Rascunho temporário: estas marcações não são salvas e serão perdidas ao recarregar a página.</span></div>
-    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-bottom:20px">
-      ${TACER_PHASES.map((p,i)=>{
-        const complete = (tacerState[p.id]||0) >= p.checklist.length;
-        const partial = (tacerState[p.id]||0) > 0 && !complete;
-        return `<div style="padding:12px;background:${complete?'var(--success)':partial?'var(--warning)':'var(--obsidian)'};border-radius:6px;text-align:center;border:2px solid ${complete?'var(--success)':partial?'var(--warning)':'var(--border-color)'};color:${complete||partial?'var(--obsidian)':'var(--text-secondary)'}">
-          <div style="font-size:24px">${p.icon}</div>
-          <div style="font-weight:700;font-size:12px;margin-top:4px">${escapeHTML(p.name)}</div>
-          <div style="font-size:10px;margin-top:2px">${tacerState[p.id]||0}/${p.checklist.length}</div>
-        </div>`;
-      }).join('')}
-    </div>
-    ${TACER_PHASES.map(p=>`<div class="panel mb-12">
-      <div class="panel-title">${p.icon} ${escapeHTML(p.name)} — ${p.desc} <span class="text-muted" style="font-size:11px;font-weight:400">${escapeHTML(p.iso)}</span></div>
-      ${p.checklist.map((item,idx)=>`<label style="display:flex;gap:8px;align-items:center;padding:6px;cursor:pointer;font-size:13px">
-        <input type="checkbox" ${(tacerState[p.id]||0)>idx?'checked':''} onchange="toggleTacerItem('${inv.id}','${p.id}',${idx})"> ${escapeHTML(item)}
-      </label>`).join('')}
-    </div>`).join('')}
-    <div class="panel mt-20">
-      <div class="panel-title">Coletas realizadas (${runs.length})</div>
-      ${runs.length?`<table style="font-size:12px"><thead><tr><th>Conector</th><th>Status</th><th>Resumo</th></tr></thead><tbody>${runs.map(r=>{const s=DB.sourceCatalog.find(x=>x.id===r.connectorId);return `<tr><td>${escapeHTML(s?.name||r.connectorId)}</td><td>${escapeHTML(r.status)}</td><td>${escapeHTML((r.resultSummary||'').slice(0,80))}</td></tr>`;}).join('')}</tbody></table>`:'<div class="text-muted">Nenhuma coleta</div>'}
-    </div>
-  `;
+WORKSPACE_RENDERERS.plano = inv => {
+  const runs = DB.osintRuns.filter(run=>run.investigationId===inv.id);
+  return `<h3>Roteiro de investigação</h3><p>Referência para revisar as etapas do trabalho. As coletas registradas aparecem abaixo.</p>
+    ${TACER_PHASES.map(phase=>`<details class="panel mb-12"><summary>${escapeHTML(phase.name)} — ${escapeHTML(phase.desc)}</summary><ul>${phase.checklist.map(item=>`<li>${escapeHTML(item)}</li>`).join('')}</ul></details>`).join('')}
+    <h3 class="mt-20">Coletas registradas</h3>${runs.length ? `<table><thead><tr><th>Fonte</th><th>Situação</th><th>Resumo</th></tr></thead><tbody>${runs.map(run=>`<tr><td>${escapeHTML(DB.sourceCatalog.find(item=>item.id===run.connectorId)?.name || 'Fonte consultada')}</td><td>${escapeHTML(({ok:'Concluída',erro:'Falhou',em_execucao:'Em andamento'})[run.status] || run.status)}</td><td>${escapeHTML(run.resultSummary || '')}</td></tr>`).join('')}</tbody></table>` : '<p>Nenhuma coleta registrada.</p>'}`;
 };
 
-function toggleTacerItem(invId, phase, idx){
-  const inv = dbGet('investigations', invId);
-  if (!inv.tacerState) inv.tacerState = {};
-  const cur = inv.tacerState[phase] || 0;
-  // Toggle: se idx<cur, reduz para idx; senão expande até idx+1
-  inv.tacerState[phase] = (cur > idx) ? idx : idx+1;
-  saveDB();
-  osintAudit('tacer_checklist', invId, {phase, idx, novo:inv.tacerState[phase]});
-  renderWorkspace();
-}
 
-// ---------- ACH (Analysis of Competing Hypotheses) ----------
-function ensureACH(inv){ if (!inv.ach) inv.ach = { hipoteses:[], evidencias:[], matrix:{} }; }
-
-WORKSPACE_RENDERERS.achados = (inv, ctx) => {
-  // Estende o renderer original adicionando bloco ACH abaixo
-  ensureACH(inv);
-  const finds = DB.osintFindings.filter(f=>f.investigationId===inv.id);
-  const ach = inv.ach;
-  const matrixCells = ach.hipoteses.map((h,hi)=>ach.evidencias.map((_,ei)=>{
-    const cell = ach.matrix[`${ei}_${hi}`] || 'N';
-    const color = cell==='C'?'#3fb950':cell==='I'?'#da3633':'#8b949e';
-    return `<td style="text-align:center;cursor:pointer;background:${color}22;color:${color};font-weight:700" onclick="cycleACH('${inv.id}',${ei},${hi})" title="C=Consistente, I=Inconsistente, N=Neutro">${cell}</td>`;
-  }).join('')).join('');
-  return `
-    ${finds.length?`<h3 style="margin-bottom:10px">📌 Achados (${finds.length})</h3>
-    <table style="font-size:12px"><thead><tr><th>Classificação</th><th>Título</th><th>Confiança</th><th>Validado</th><th></th></tr></thead><tbody>
-      ${finds.map(f=>`<tr>
-        <td>${classChip(f.classification)}</td>
-        <td><strong>${escapeHTML(f.title)}</strong></td>
-        <td>${((f.confidenceScore||0)*100).toFixed(0)}%</td>
-        <td>${f.humanValidated?'✓':'—'}</td>
-        <td><div class="row-actions">
-          <button class="btn btn-small btn-secondary" onclick="showFindingDetail('${f.id}')">Detalhe</button>
-          ${!f.humanValidated && !ctx.isReadOnly?`<button class="btn btn-small btn-primary" onclick="validateFinding('${f.id}')">Validar</button>`:''}
-          ${!ctx.isReadOnly?`<button class="btn btn-small btn-primary" onclick="promoteFindingToEvidence('${f.id}')">→ Evid.</button>`:''}
-          ${!ctx.isReadOnly?`<button class="btn btn-small btn-secondary" onclick="addACHEvidence('${inv.id}','${f.id}')">→ ACH</button>`:''}
-        </div></td>
-      </tr>`).join('')}
-    </tbody></table>`:'<div class="text-muted">Nenhum achado</div>'}
-
-    <h3 style="margin:24px 0 10px">🧠 ACH — Análise de Hipóteses Concorrentes</h3>
-    <div class="alert alert-warning"><span>ℹ️</span><span>Rascunho temporário: hipóteses e avaliações desta matriz não são salvas e serão perdidas ao recarregar a página. Os achados listados acima seguem seu próprio fluxo de registro.</span></div>
-    <div class="alert alert-info"><span>ℹ️</span><span>Método CIA Heuer: cada hipótese é confrontada com TODAS as evidências. Hipótese com menos inconsistências = mais plausível.</span></div>
-    ${!ctx.isReadOnly?`<div class="filter-bar">
-      <button class="btn btn-secondary btn-small" onclick="addACHHipotese('${inv.id}')">+ Hipótese</button>
-      <span class="text-muted" style="font-size:11px">Hipóteses: ${ach.hipoteses.length} • Evidências ACH: ${ach.evidencias.length}</span>
-    </div>`:''}
-    ${ach.hipoteses.length && ach.evidencias.length ? `
-      <table style="font-size:11px"><thead><tr><th>Evidência ↓ / Hipótese →</th>${ach.hipoteses.map((h,i)=>`<th title="${escapeHTML(h)}">H${i+1}</th>`).join('')}</tr></thead>
-      <tbody>${ach.evidencias.map((e,ei)=>`<tr><td style="max-width:300px;font-size:11px">E${ei+1}: ${escapeHTML(e)}</td>${ach.hipoteses.map((_,hi)=>{const cell=ach.matrix[`${ei}_${hi}`]||'N';const color=cell==='C'?'#3fb950':cell==='I'?'#da3633':'#8b949e';return `<td style="text-align:center;cursor:pointer;background:${color}22;color:${color};font-weight:700;font-size:14px" onclick="cycleACH('${inv.id}',${ei},${hi})" title="Clique: N→C→I→N">${cell}</td>`;}).join('')}</tr>`).join('')}</tbody>
-      <tfoot><tr><td style="font-weight:700">Score (inconsistências)</td>${ach.hipoteses.map((_,hi)=>{const inc=ach.evidencias.reduce((s,_,ei)=>s+(ach.matrix[`${ei}_${hi}`]==='I'?1:0),0);return `<td style="text-align:center;font-weight:700;color:${inc===0?'var(--success)':inc<=1?'var(--warning)':'var(--danger)'}">${inc}</td>`;}).join('')}</tr></tfoot>
-      </table>
-      <h4 style="margin:14px 0 6px">Hipóteses</h4>
-      <ol style="font-size:12px;padding-left:24px">${ach.hipoteses.map((h,i)=>`<li><strong>H${i+1}:</strong> ${escapeHTML(h)}</li>`).join('')}</ol>
-    ` : '<div class="text-muted">Cadastre ao menos 2 hipóteses e 1 evidência para montar a matriz.</div>'}
-  `;
-};
-
-function addACHHipotese(invId){
-  const text = prompt('Digite a hipótese a investigar:');
-  if (!text || !text.trim()) return;
-  const inv = dbGet('investigations', invId); ensureACH(inv);
-  inv.ach.hipoteses.push(text.trim());
-  saveDB();
-  osintAudit('ach_hipotese_adicionada', invId, {hipotese:text.trim().slice(0,80)});
-  renderWorkspace();
-}
-function addACHEvidence(invId, findingId){
-  const f = DB.osintFindings.find(x=>x.id===findingId);
-  if (!f){ toast('Achado não encontrado','error'); return; }
-  const inv = dbGet('investigations', invId); ensureACH(inv);
-  const desc = `${f.title} (${f.classification})`;
-  if (!inv.ach.evidencias.includes(desc)) inv.ach.evidencias.push(desc);
-  saveDB();
-  osintAudit('ach_evidencia_adicionada', invId, {findingId});
-  toast('Evidência incluída na matriz ACH','success');
-  renderWorkspace();
-}
-function cycleACH(invId, ei, hi){
-  const inv = dbGet('investigations', invId); ensureACH(inv);
-  const key = `${ei}_${hi}`;
-  const cur = inv.ach.matrix[key] || 'N';
-  const next = cur==='N'?'C':cur==='C'?'I':'N';
-  inv.ach.matrix[key] = next;
-  saveDB();
-  renderWorkspace();
-}
-
-// ============================================================
-//   PERFIL 360° de CLIENTES + PROCESSO COMPLETO + DIÁRIO OFICIAL
-//   Extensão sem quebrar o sistema existente
-// ============================================================
 
 const CLIENT_TAB_STATE = { tab:'visao' };
 const PROCESS_TAB_STATE = { tab:'visao' };
@@ -4821,36 +4659,47 @@ function clientStat(c){
 
 // =================== PERFIL 360° ===================
 function showClientDetail360(id){
-  ensureClientExtended(dbGet('clients', id));
+  const client = dbGet('clients', id);
+  if (!client) { toast('Cliente não encontrado.', 'warning'); return; }
+  ensureClientExtended(client);
   CLIENT_TAB_STATE.tab = 'visao';
   CLIENT_TAB_STATE.id = id;
   renderClient360();
 }
-function switchClientTab(t){ CLIENT_TAB_STATE.tab = t; renderClient360(); }
+function switchClientTab(t){ if(!confirmModalLeave()) return; CLIENT_TAB_STATE.tab = t; renderClient360(); }
 
 function renderClient360(){
   const c = dbGet('clients', CLIENT_TAB_STATE.id);
+  if (!c) return;
   ensureClientExtended(c);
   const tabs = [
     {id:'visao',     label:'👤 Visão Geral'},
-    {id:'biografia', label:'📖 Biografia'},
-    {id:'politico',  label:'🏛️ Histórico Político'},
-    {id:'bens',      label:'💰 Bens Declarados'},
-    {id:'empresas',  label:'🏢 Empresas'},
+    {id:'perfil', label:'📖 Perfil complementar'},
     {id:'processos', label:'📋 Processos'},
     {id:'documentos',label:'📂 Documentos'},
-    {id:'noticias',  label:'📰 Notícias'},
     {id:'links',     label:'🔗 Links Públicos'},
     {id:'osint',     label:'🕵️ OSINT'}
   ];
-  const tabsHTML = `<div class="tabs">${tabs.map(t=>`<button class="tab ${CLIENT_TAB_STATE.tab===t.id?'active':''}" onclick="switchClientTab('${t.id}')">${t.label}</button>`).join('')}</div>`;
+  const available = {};
+  const visibleTabs = tabs.filter(tab => available[tab.id] !== false);
+  if (!visibleTabs.some(tab=>tab.id===CLIENT_TAB_STATE.tab)) CLIENT_TAB_STATE.tab='visao';
+  const tabsHTML = `<div class="tabs">${visibleTabs.map(t=>`<button class="tab ${CLIENT_TAB_STATE.tab===t.id?'active':''}" onclick="switchClientTab('${t.id}')">${t.label}</button>`).join('')}</div>`;
   const body = tabsHTML + (CLIENT_TAB_RENDER[CLIENT_TAB_STATE.tab]||(()=>''))(c);
   const titleBadge = `<span class="badge ${c.type==='PJ'?'badge-warning':'badge-primary'}" style="margin-left:8px">${c.type==='PJ'?'PJ':'PF'}</span>`;
   openModal({ wide:true, title:`${escapeHTML(c.name)} ${titleBadge}`, body,
-    footer:`<button class="btn btn-secondary" onclick="closeModal()">Fechar</button><button class="btn btn-primary" onclick="closeModal();openClientForm('${c.id}')">Editar dados básicos</button>`});
+    footer:`<button class="btn btn-secondary" onclick="closeModal()">Fechar</button>${canEditLegalRecords()?`<button class="btn btn-primary" onclick="closeModal();openClientForm('${c.id}')">Editar dados básicos</button>`:''}`,
+    onMount(){
+      if(CLIENT_TAB_STATE.tab==='perfil') {
+        const panel=document.getElementById('clientProfilePanel');
+        window.SemperClientProfile.mount({clientId:c.id,canEdit:canEditLegalRecords(),request:backendApi}).then(controller=>{if(panel.isConnected) panel._profileController=controller;});
+      }
+      if(CLIENT_TAB_STATE.tab==='documentos') window.SemperfiLegalDocuments.mount({targetKind:'client',targetId:c.id,canEdit:canEditLegalRecords(),request:backendApi,onFiles(){closeModal();navigateSection('metadata');}});
+    }
+  });
 }
 
 const CLIENT_TAB_RENDER = {};
+CLIENT_TAB_RENDER.perfil = () => window.SemperClientProfile.render();
 
 CLIENT_TAB_RENDER.visao = (c) => {
   const s = clientStat(c);
@@ -4877,60 +4726,18 @@ CLIENT_TAB_RENDER.visao = (c) => {
     </div>
     ${c.address?`<div style="margin-top:12px;padding:10px;background:var(--obsidian);border-radius:6px"><strong>Endereço:</strong> ${escapeHTML(c.address)}</div>`:''}
     ${c.notes?`<div style="margin-top:8px;padding:10px;background:var(--obsidian);border-radius:6px"><strong>Notas:</strong> ${escapeHTML(c.notes)}</div>`:''}
-    <div class="alert alert-info mt-20"><span>💡</span><span>Use as abas para explorar biografia, vida pública, bens, empresas, processos, documentos arquivados, notícias e links públicos. Tudo determinístico (links + DB local).</span></div>
+    <div class="alert alert-info mt-20"><span>💡</span><span>Registre biografia, histórico, bens, empresas e fontes no Perfil complementar. Consulte os processos e vincule arquivos na aba Documentos.</span></div>
   `;
 };
 
-CLIENT_TAB_RENDER.biografia = (c) => `
-  <h3 style="margin-bottom:10px">📖 Biografia</h3>
-  <textarea class="form-textarea" id="bioText" style="min-height:200px" placeholder="Resumo biográfico, antecedentes profissionais, perfil de personalidade, contexto familiar...">${escapeHTML(c.biography||'')}</textarea>
-  <div class="filter-bar mt-12">
-    <button class="btn btn-primary btn-small" onclick="saveClientBiography('${c.id}')">💾 Salvar biografia</button>
-    <button class="btn btn-secondary btn-small" onclick="generateBiographyDraft('${c.id}')">🪄 Sugerir esboço a partir dos dados</button>
-  </div>
-  <div class="alert alert-warning mt-20"><span>⚠️</span><span><strong>Sobre perfil de personalidade:</strong> análises psicológicas formais exigem profissional habilitado. Esta seção registra observações objetivas (perfil profissional, antecedentes, contexto), não diagnósticos.</span></div>
-`;
-
-CLIENT_TAB_RENDER.politico = (c) => `
-  <h3 style="margin-bottom:10px">🏛️ Histórico Político e Cargos Públicos</h3>
-  <div class="filter-bar">
-    <button class="btn btn-primary btn-small" onclick="addPoliticalEntry('${c.id}','candidato')">+ Candidatura</button>
-    <button class="btn btn-primary btn-small" onclick="addPoliticalEntry('${c.id}','cargo')">+ Cargo público</button>
-    <a class="btn btn-secondary btn-small" href="https://divulgacandcontas.tse.jus.br/divulga/" target="_blank" rel="noopener">🔗 TSE — Candidaturas</a>
-    <a class="btn btn-secondary btn-small" href="https://portaldatransparencia.gov.br/servidores" target="_blank" rel="noopener">🔗 Transparência — Servidores</a>
-  </div>
-  ${c.politicalHistory.length?`<h4 class="mt-20">Candidaturas (${c.politicalHistory.length})</h4>
-    <table style="font-size:12px"><thead><tr><th>Ano</th><th>Cargo</th><th>Partido</th><th>Situação</th><th>Fonte</th><th></th></tr></thead><tbody>
-    ${c.politicalHistory.map((p,i)=>`<tr><td>${escapeHTML(p.ano||'')}</td><td>${escapeHTML(p.cargo||'')}</td><td>${escapeHTML(p.partido||'')}</td><td>${escapeHTML(p.situacao||'')}</td><td>${escapeHTML(p.fonte||'')}</td><td><button class="btn btn-small btn-danger" onclick="removeClientItem('${c.id}','politicalHistory',${i})">×</button></td></tr>`).join('')}
-    </tbody></table>`:'<div class="text-muted mt-12">Nenhuma candidatura registrada.</div>'}
-  ${c.publicOffices.length?`<h4 class="mt-20">Cargos públicos (${c.publicOffices.length})</h4>
-    <table style="font-size:12px"><thead><tr><th>Cargo</th><th>Órgão</th><th>Período</th><th>Fonte</th><th></th></tr></thead><tbody>
-    ${c.publicOffices.map((o,i)=>`<tr><td>${escapeHTML(o.cargo||'')}</td><td>${escapeHTML(o.orgao||'')}</td><td>${escapeHTML(o.periodo||'')}</td><td>${escapeHTML(o.fonte||'')}</td><td><button class="btn btn-small btn-danger" onclick="removeClientItem('${c.id}','publicOffices',${i})">×</button></td></tr>`).join('')}
-    </tbody></table>`:''}
-`;
-
-CLIENT_TAB_RENDER.bens = (c) => `
-  <h3 style="margin-bottom:10px">💰 Bens Declarados</h3>
-  <div class="filter-bar">
-    <button class="btn btn-primary btn-small" onclick="addAsset('${c.id}')">+ Bem declarado</button>
-    <span class="text-muted" style="font-size:12px">Total: <strong>${fmtMoney(c.assets.reduce((s,a)=>s+(parseFloat(a.valor)||0),0))}</strong></span>
-  </div>
-  ${c.assets.length?`<table style="font-size:12px;margin-top:12px"><thead><tr><th>Tipo</th><th>Descrição</th><th>Valor</th><th>Ano</th><th>Fonte</th><th></th></tr></thead><tbody>
-    ${c.assets.map((a,i)=>`<tr><td><span class="badge badge-primary">${escapeHTML(a.tipo||'')}</span></td><td>${escapeHTML(a.descricao||'')}</td><td>${fmtMoney(a.valor||0)}</td><td>${escapeHTML(a.ano||'')}</td><td>${escapeHTML(a.fonte||'')}</td><td><button class="btn btn-small btn-danger" onclick="removeClientItem('${c.id}','assets',${i})">×</button></td></tr>`).join('')}
-    </tbody></table>`:'<div class="text-muted mt-12">Nenhum bem declarado.</div>'}
-  <div class="alert alert-warning mt-20" style="font-size:12px"><span>⚠️</span><span>Para recuperação de ativos: consulte Cartórios (imóveis), Detran (veículos), ANAC (aeronaves), Capitania dos Portos (embarcações), Junta Comercial (participações). Backend é necessário para integração.</span></div>
-`;
-
-CLIENT_TAB_RENDER.empresas = (c) => `
-  <h3 style="margin-bottom:10px">🏢 Empresas Vinculadas</h3>
-  <div class="filter-bar">
-    <button class="btn btn-primary btn-small" onclick="addCompanyLink('${c.id}')">+ Vincular empresa (manual)</button>
-    <button class="btn btn-secondary btn-small" onclick="closeModal();navigateSection('societario');setTimeout(()=>{radarState.tipo='${c.type==='PJ'?'cnpj':'cpf'}';radarState.query='${escapeHTML(c.document||'')}';renderSection('societario');},150)">🔍 Buscar no Radar Societário</button>
-  </div>
-  ${c.companies.length?`<table style="font-size:12px;margin-top:12px"><thead><tr><th>CNPJ</th><th>Nome</th><th>Qualificação</th><th>Status</th><th></th></tr></thead><tbody>
-    ${c.companies.map((e,i)=>`<tr><td class="masked">${escapeHTML(maskDoc(e.cnpj||''))}</td><td>${escapeHTML(e.nome||'')}</td><td>${escapeHTML(e.qualificacao||'')}</td><td>${escapeHTML(e.status||'')}</td><td><button class="btn btn-small btn-danger" onclick="removeClientItem('${c.id}','companies',${i})">×</button></td></tr>`).join('')}
-    </tbody></table>`:'<div class="text-muted mt-12">Nenhuma empresa vinculada.</div>'}
-`;
+function clientReadOnlyTable(title, headings, rows){
+  if (!rows.length) return '';
+  return `<section class="mt-20"><h3>${escapeHTML(title)}</h3><table><thead><tr>${headings.map(label=>`<th>${escapeHTML(label)}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${row.map(value=>`<td>${escapeHTML(value ?? '—')}</td>`).join('')}</tr>`).join('')}</tbody></table></section>`;
+}
+CLIENT_TAB_RENDER.biografia = c => `<h3>Biografia registrada</h3><p style="white-space:pre-wrap">${escapeHTML(c.biography || '')}</p>`;
+CLIENT_TAB_RENDER.politico = c => clientReadOnlyTable('Candidaturas registradas',['Ano','Cargo','Partido','Situação','Fonte'],c.politicalHistory.map(row=>[row.ano,row.cargo,row.partido,row.situacao,row.fonte])) + clientReadOnlyTable('Cargos públicos registrados',['Cargo','Órgão','Período','Fonte'],c.publicOffices.map(row=>[row.cargo,row.orgao,row.periodo,row.fonte]));
+CLIENT_TAB_RENDER.bens = c => clientReadOnlyTable('Bens declarados',['Tipo','Descrição','Valor','Ano','Fonte'],c.assets.map(row=>[row.tipo,row.descricao,fmtMoney(row.valor),row.ano,row.fonte]));
+CLIENT_TAB_RENDER.empresas = c => clientReadOnlyTable('Empresas vinculadas',['CNPJ','Nome','Qualificação','Situação'],c.companies.map(row=>[maskDoc(row.cnpj||''),row.nome,row.qualificacao,row.status]));
 
 CLIENT_TAB_RENDER.processos = (c) => {
   const procs = DB.processes.filter(p=>p.clientId===c.id);
@@ -4940,38 +4747,8 @@ CLIENT_TAB_RENDER.processos = (c) => {
     </tbody></table>`:'<div class="text-muted">Nenhum processo</div>';
 };
 
-CLIENT_TAB_RENDER.documentos = (c) => {
-  const docs = (c.documents||[]).map(d=>{ const f=dbGet('files', d.fileId); return {...d, file:f}; });
-  const KINDS = ['Procuração','RG/CNH','CPF','Comprovante de endereço','Contrato','Decisão','Outro'];
-  return `
-    <h3 style="margin-bottom:10px">📂 Documentos arquivados</h3>
-    <div class="alert alert-info" style="font-size:12px"><span>ℹ️</span><span>Cada documento gera SHA-256, fica no cofre e mantém vínculo com este cliente. Formatos: PDF, imagens, Word.</span></div>
-    <div class="filter-bar">
-      <select class="form-select" id="docKind" style="flex:0 0 200px">${KINDS.map(k=>`<option>${k}</option>`).join('')}</select>
-      <input type="file" id="docFile" accept=".pdf,.png,.jpg,.jpeg,.tiff,.doc,.docx,.odt" style="flex:1">
-      <button class="btn btn-primary btn-small" onclick="archiveClientDocument('${c.id}')">📥 Arquivar</button>
-    </div>
-    ${docs.length?`<table style="font-size:12px;margin-top:12px"><thead><tr><th>Tipo</th><th>Arquivo</th><th>Tamanho</th><th>SHA-256</th><th>Data</th><th></th></tr></thead><tbody>
-      ${docs.map((d,i)=>d.file?`<tr><td><span class="badge badge-warning">${escapeHTML(d.kind)}</span></td><td>${escapeHTML(d.file.name)}</td><td>${(d.file.size/1024/1024).toFixed(2)} MB</td><td class="masked" style="font-size:10px" title="${escapeHTML(d.file.hash)}">${escapeHTML(maskHash(d.file.hash))}</td><td>${fmtDateTime(d.addedAt)}</td><td><button class="btn btn-small btn-secondary" onclick="showFileDetail('${d.file.id}')">Ver</button> <button class="btn btn-small btn-danger" onclick="removeClientDocument('${c.id}',${i})">×</button></td></tr>`:`<tr><td colspan="6" class="text-muted">Arquivo removido (id ${d.fileId})</td></tr>`).join('')}
-    </tbody></table>`:'<div class="text-muted mt-12">Nenhum documento arquivado.</div>'}
-  `;
-};
-
-CLIENT_TAB_RENDER.noticias = (c) => `
-  <h3 style="margin-bottom:10px">📰 Notícias e Menções</h3>
-  <div class="filter-bar">
-    <button class="btn btn-primary btn-small" onclick="addNewsMention('${c.id}')">+ Registrar menção manual</button>
-    <a class="btn btn-secondary btn-small" href="https://news.google.com/search?q=${encodeURIComponent(c.name)}" target="_blank" rel="noopener">🔗 Google News</a>
-    <a class="btn btn-secondary btn-small" href="https://www.google.com/search?q=${encodeURIComponent(c.name)}+site:jusbrasil.com.br" target="_blank" rel="noopener">🔗 Jusbrasil</a>
-    <a class="btn btn-secondary btn-small" href="https://www.google.com/search?q=${encodeURIComponent(c.name)}+blog+OR+jornal+OR+informativo" target="_blank" rel="noopener">🔗 Blogs/Jornais</a>
-  </div>
-  ${c.newsMentions.length?c.newsMentions.map((n,i)=>`<div style="padding:12px;background:var(--obsidian);border-radius:6px;margin-top:10px;border-left:3px solid var(--info)">
-    <div style="display:flex;justify-content:space-between"><strong>${escapeHTML(n.titulo||'(sem título)')}</strong><button class="btn btn-small btn-danger" onclick="removeClientItem('${c.id}','newsMentions',${i})">×</button></div>
-    <div class="text-muted" style="font-size:11px;margin-top:4px">${escapeHTML(n.fonte||'')} • ${escapeHTML(n.data||'')}</div>
-    ${n.snippet?`<div style="font-size:12px;margin-top:6px">${escapeHTML(n.snippet)}</div>`:''}
-    ${n.url?`<a href="${escapeHTML(n.url)}" target="_blank" rel="noopener" style="color:var(--teal-accent);font-size:11px">${escapeHTML(n.url)} ↗</a>`:''}
-  </div>`).join(''):'<div class="text-muted mt-12">Nenhuma menção registrada. Use os links externos acima para localizar.</div>'}
-`;
+CLIENT_TAB_RENDER.documentos = () => window.SemperfiLegalDocuments.render();
+CLIENT_TAB_RENDER.noticias = c => clientReadOnlyTable('Notícias registradas',['Título','Fonte','Data','Resumo'],c.newsMentions.map(row=>[row.titulo,row.fonte,row.data,row.snippet]));
 
 CLIENT_TAB_RENDER.links = (c) => {
   const links = clientPublicLinks(c);
@@ -5000,43 +4777,13 @@ CLIENT_TAB_RENDER.osint = (c) => `
   })()}
 `;
 
-// --------- Ações de cliente estendido ---------
-function saveClientBiography(id){
-  toast('O salvamento da biografia ainda não está disponível. Nenhum dado foi gravado.', 'warning');
-}
-function generateBiographyDraft(id){
-  const c = dbGet('clients', id);
-  const procs = DB.processes.filter(p=>p.clientId===id);
-  const draft = `${c.name} (${c.type==='PJ'?'pessoa jurídica':'pessoa física'}), documento ${maskDoc(c.document)}. ` +
-    (c.profession?`Profissão/atividade: ${c.profession}. `:'') +
-    (c.address?`Endereço: ${c.address}. `:'') +
-    (procs.length?`Possui ${procs.length} processo(s) vinculado(s), nas áreas: ${[...new Set(procs.map(p=>p.area))].join(', ')}. `:'') +
-    (c.politicalHistory.length?`Histórico político: ${c.politicalHistory.length} candidatura(s) registrada(s). `:'') +
-    (c.publicOffices.length?`Cargos públicos: ${c.publicOffices.length} registro(s). `:'') +
-    `Cliente desde ${fmtDate(toISO(new Date(c.createdAt)))}, status atual: ${c.status}.`;
-  document.getElementById('bioText').value = draft;
-  toast('Esboço gerado a partir dos dados estruturados (determinístico)','info');
-}
-function addPoliticalEntry(id, tipo){
-  toast('O cadastro de histórico político ainda não está disponível. Nenhum dado foi gravado.', 'warning');
-}
-function addAsset(id){
-  toast('O cadastro de patrimônio ainda não está disponível. Nenhum dado foi gravado.', 'warning');
-}
-function addCompanyLink(id){
-  toast('O cadastro de vínculos empresariais ainda não está disponível. Nenhum dado foi gravado.', 'warning');
-}
-function addNewsMention(id){
-  toast('O cadastro de notícias no perfil ainda não está disponível. Nenhum dado foi gravado.', 'warning');
-}
-function removeClientItem(id, field, idx){
-  toast('A alteração dos dados complementares do perfil ainda não está disponível. Nenhum dado foi removido.', 'warning');
-}
-async function archiveClientDocument(id){
-  toast('O arquivamento de documentos neste perfil ainda não está disponível. Nenhum arquivo foi enviado ou gravado.', 'warning');
-}
-function removeClientDocument(id, idx){
-  toast('A alteração dos documentos deste perfil ainda não está disponível. Nenhum vínculo foi removido.', 'warning');
+// Complementary profile records are consulted only when supplied by the server.
+function openClientInvestigation(id){
+  const client = dbGet('clients', id);
+  if (!client) return;
+  closeModal();
+  osintState.wizard = {step:1,data:{title:`Investigação — ${client.name}`,clientId:id,scope:[],status:'rascunho'}};
+  renderWizardStep();
 }
 
 // =================== PROCESSO COMPLETO ===================
@@ -5061,7 +4808,11 @@ function renderProcessFull(){
   const tabsHTML = `<div class="tabs">${tabs.map(t=>`<button class="tab ${PROCESS_TAB_STATE.tab===t.id?'active':''}" onclick="switchProcessTab('${t.id}')">${t.label}</button>`).join('')}</div>`;
   const body = tabsHTML + (PROCESS_TAB_RENDER[PROCESS_TAB_STATE.tab]||(()=>''))(p, cli);
   openModal({ wide:true, title:`Processo ${escapeHTML(p.number)}`, body,
-    footer:`<button class="btn btn-secondary" onclick="closeModal()">Fechar</button><button class="btn btn-primary" onclick="closeModal();openProcessForm('${p.id}')">Editar</button>`});
+    footer:`<button class="btn btn-secondary" onclick="closeModal()">Fechar</button>${canEditLegalRecords()?`<button class="btn btn-primary" onclick="closeModal();openProcessForm('${p.id}')">Editar</button>`:''}`,
+    onMount(){
+      if(PROCESS_TAB_STATE.tab==='arquivos') window.SemperfiLegalDocuments.mount({targetKind:'process',targetId:p.id,canEdit:canEditLegalRecords(),request:backendApi,onCount(count){p.documentCount=count;},onFiles(){closeModal();navigateSection('metadata');}});
+    }
+  });
 }
 
 const PROCESS_TAB_RENDER = {};
@@ -5083,7 +4834,7 @@ PROCESS_TAB_RENDER.visao = (p, cli) => `
     <div class="kpi-card"><div class="kpi-label">Andamentos</div><div class="kpi-value" style="font-size:22px">${DB.processMovements.filter(m=>m.processId===p.id).length}</div></div>
     <div class="kpi-card"><div class="kpi-label">Prazos pendentes</div><div class="kpi-value" style="font-size:22px">${DB.deadlines.filter(d=>d.processId===p.id&&d.status==='pendente').length}</div></div>
     <div class="kpi-card"><div class="kpi-label">Intimações</div><div class="kpi-value" style="font-size:22px">${DB.intimations.filter(i=>i.processId===p.id).length}</div></div>
-    <div class="kpi-card"><div class="kpi-label">Arquivos</div><div class="kpi-value" style="font-size:22px">${DB.files.filter(f=>f.processId===p.id).length}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Arquivos vinculados</div><div class="kpi-value" style="font-size:22px">${p.documentCount ?? '—'}</div><small>Consulte a aba Arquivos</small></div>
   </div>
 `;
 
@@ -5157,10 +4908,7 @@ PROCESS_TAB_RENDER.intimacoes = (p) => {
   }).join(''):'<div class="text-muted mt-12">Nenhuma intimação para este processo.</div>'}`;
 };
 
-PROCESS_TAB_RENDER.arquivos = (p) => {
-  const files = DB.files.filter(f=>f.processId===p.id);
-  return files.length?files.map(f=>`<div style="padding:8px;background:var(--obsidian);border-radius:4px;margin-bottom:4px;display:flex;justify-content:space-between"><div>📄 ${escapeHTML(f.name)} (${(f.size/1024/1024).toFixed(2)} MB) <code class="masked" style="font-size:10px">${escapeHTML(maskHash(f.hash))}</code></div><button class="btn btn-small btn-secondary" onclick="showFileDetail('${f.id}')">Ver</button></div>`).join(''):'<div class="text-muted">Nenhum arquivo</div>';
-};
+PROCESS_TAB_RENDER.arquivos = () => window.SemperfiLegalDocuments.render();
 
 PROCESS_TAB_RENDER.financeiro = (p) => {
   const fin = DB.financial.filter(f=>f.processId===p.id);
@@ -5295,6 +5043,8 @@ SECTION_RENDERERS.transparencia = () => window.SemperfiIntegrations.renderTransp
 SECTION_AFTER.transparencia = () => window.SemperfiIntegrations.mountTransparency(backendApi);
 SECTION_RENDERERS.agentes = () => window.SemperfiIntegrations.renderAgents(DB.investigations);
 SECTION_AFTER.agentes = () => window.SemperfiIntegrations.mountAgents(backendApi);
+SECTION_RENDERERS.societario = () => window.SemperfiRadar.render(DB.investigations);
+SECTION_AFTER.societario = () => window.SemperfiRadar.mount(backendApi, buildRadarFromCNPJ, result => { radarState.result=result; return renderRadarResult(); });
 const localReportsRenderer = SECTION_RENDERERS.reports;
 SECTION_RENDERERS.reports = () => localReportsRenderer() + window.SemperfiIntegrations.renderReports();
 SECTION_AFTER.reports = () => window.SemperfiIntegrations.mountReports(backendApi);
@@ -5302,10 +5052,15 @@ const localFilesRenderer = SECTION_RENDERERS.metadata;
 const localFilesMount = SECTION_AFTER.metadata;
 SECTION_RENDERERS.metadata = () => window.SemperfiIntegrations.renderFiles(DB.investigations) + `<details class="panel mt-20"><summary>Inspeção temporária de arquivos no navegador</summary>${localFilesRenderer()}</details>`;
 SECTION_AFTER.metadata = () => { localFilesMount?.(); window.SemperfiIntegrations.mountFiles(backendApi); };
+const settingsRenderer = SECTION_RENDERERS.settings;
+const settingsMount = SECTION_AFTER.settings;
+SECTION_RENDERERS.settings = () => settingsRenderer() + window.SemperfiOrganization.render();
+SECTION_AFTER.settings = () => { settingsMount?.(); window.SemperfiOrganization.mount(backendApi); };
 
 async function startWorkspace(){
   try {
     await hydrateFromBackend();
+    if(window.SemperfiOrganization.hasPendingInvitation()) appState.currentSection='settings';
     if (SETTINGS.sidebarCollapsed) document.getElementById('sidebar').classList.add('collapsed');
     renderSidebar(); renderSection(appState.currentSection); renderNotifications(); renderTopbarMeters();
     document.body.classList.remove('auth-pending');
@@ -5332,4 +5087,3 @@ for (const name of ['saveClient','saveProcess','saveDeadline','saveAppointment',
   };
 }
 startWorkspace();
-

@@ -7,7 +7,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse
 from pydantic import (
@@ -19,7 +19,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -71,6 +71,20 @@ class VerificationCode(BaseModel):
     code: str = Field(pattern=r"^[0-9]{6}$", min_length=6, max_length=6)
 
 
+class PasswordRecovery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: EmailStr = Field(max_length=320)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value):
+        return value.strip().lower() if isinstance(value, str) else value
+
+
+class PasswordReset(VerificationCode):
+    password: SecretStr = Field(min_length=12, max_length=128)
+
+
 async def limit_password_attempts(request: Request, email: str, action: str) -> None:
     # Use the ASGI peer address; only a trusted deployment proxy may supply it.
     # Do not place addresses or e-mail addresses in Redis keys.
@@ -101,10 +115,10 @@ def password_principal(user: User, membership: Membership, account_type: str | N
                      frozenset([membership.role, *membership.permissions]), datetime.now(UTC), "password", account_type)
 
 
-async def start_session(request: Request, response: Response, principal: Principal) -> str:
+async def start_session(request: Request, response: Response, principal: Principal, *, password_hash: str | None = None) -> str:
     session_id = None
     try:
-        session_id = await session_store.create(principal)
+        session_id = await session_store.create(principal, password_hash=password_hash)
         await session_store.delete(request.cookies.get(settings.session_cookie_name))
     except Exception as exc:
         if session_id:
@@ -133,6 +147,7 @@ async def authentication_status(request: Request, response: Response, session: A
         "authenticated": principal is not None,
         "mode": settings.auth_mode,
         "password_enabled": settings.auth_mode == "password",
+        "password_recovery_enabled": settings.auth_mode == "password",
         "verification_channel": "email",
         "pending_verification": challenges.metadata(challenge) if challenge else None,
         "registration_enabled": settings.auth_mode == "password" and settings.allow_self_registration,
@@ -181,6 +196,61 @@ async def register_account(body: AccountRegistration, request: Request, response
                                   organization_name=body.organization_name if body.account_type == "PJ" else None)
 
 
+@router.post("/auth/password/forgot", status_code=202)
+async def forgot_password(body: PasswordRecovery, request: Request, response: Response,
+                          background: BackgroundTasks, session: AsyncSession = Depends(get_unauth_db)):
+    if settings.auth_mode != "password":
+        raise HTTPException(status_code=403, detail="Recuperação por senha não está habilitada neste ambiente.")
+    email = str(body.email)
+    await limit_password_attempts(request, email, "recovery")
+    user = await session.scalar(select(User).where(func.lower(User.email) == email,
+                                                  User.is_active.is_(True), User.deleted_at.is_(None)))
+    membership = await active_membership(session, user.id) if user and user.password_hash else None
+    # A decoy challenge gives unknown, suspended and institutional-only accounts
+    # the same public response, expiry, cookie and resend controls.
+    result = await challenges.begin(
+        session, response, purpose="reset", email=email, account_type=None,
+        password_hash=user.password_hash if membership else None,
+        user_id=user.id if membership else None,
+        tenant_id=membership.tenant_id if membership else None, background=background,
+    )
+    result["message"] = "Se houver uma conta elegível para este e-mail, enviaremos um código para redefinir sua senha."
+    return result
+
+
+@router.post("/auth/password/reset")
+async def reset_password(body: PasswordReset, request: Request, response: Response,
+                         session: AsyncSession = Depends(get_unauth_db)):
+    if settings.auth_mode != "password":
+        raise HTTPException(status_code=403, detail="Recuperação por senha não está habilitada neste ambiente.")
+    challenge = await challenges.claim(session, request, body.code, purpose="reset")
+    try:
+        user = await session.get(User, challenge.user_id) if challenge.user_id else None
+        membership = await active_membership(session, user.id) if user else None
+        if (not user or not membership or not user.is_active or user.deleted_at is not None
+                or user.email != challenge.email or not user.password_hash
+                or not hmac.compare_digest(user.password_hash, challenge.password_hash or "")):
+            raise HTTPException(status_code=400, detail="Código inválido ou expirado. Solicite outro código.")
+        encoded = await run_in_threadpool(hash_password, body.password.get_secret_value())
+        changed = await session.execute(update(User).where(
+            User.id == user.id, User.password_hash == challenge.password_hash,
+            User.email == challenge.email, User.is_active.is_(True), User.deleted_at.is_(None),
+        ).values(password_hash=encoded).execution_options(synchronize_session=False))
+        if changed.rowcount != 1:
+            raise HTTPException(status_code=400, detail="Código inválido ou expirado. Solicite outro código.")
+        await challenges.finish(session, challenge)
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    # Every existing password session carries the former credential version and
+    # is rejected on its next request. A reset does not bypass login or its MFA.
+    challenges.clear_challenge_cookie(response)
+    response.delete_cookie(settings.session_cookie_name, path="/")
+    return {"authenticated": False, "password_reset": True,
+            "message": "Senha redefinida. Entre com sua nova senha e confirme o código de acesso."}
+
+
 @router.post("/auth/verify")
 async def verify_code(body: VerificationCode, request: Request, response: Response, session: AsyncSession = Depends(get_unauth_db)):
     if settings.auth_mode != "password":
@@ -214,7 +284,7 @@ async def verify_code(body: VerificationCode, request: Request, response: Respon
                 raise HTTPException(status_code=401, detail="Verificação de acesso inválida. Entre novamente.")
             membership, tenant = row
         await challenges.finish(session, challenge)
-        session_id = await start_session(request, response, password_principal(user, membership, tenant.account_type))
+        session_id = await start_session(request, response, password_principal(user, membership, tenant.account_type), password_hash=user.password_hash)
         await session.commit()
     except Exception as exc:
         await session.rollback()
@@ -228,10 +298,10 @@ async def verify_code(body: VerificationCode, request: Request, response: Respon
 
 
 @router.post("/auth/resend")
-async def resend_code(request: Request, response: Response, session: AsyncSession = Depends(get_unauth_db)):
+async def resend_code(request: Request, response: Response, background: BackgroundTasks, session: AsyncSession = Depends(get_unauth_db)):
     if settings.auth_mode != "password":
         raise HTTPException(status_code=403, detail="Acesso por senha não está habilitado neste ambiente.")
-    return await challenges.resend(session, request, response)
+    return await challenges.resend(session, request, response, background)
 
 
 @router.post("/auth/cancel", status_code=204)
@@ -242,6 +312,11 @@ async def cancel_verification(request: Request, response: Response, session: Asy
 @router.post("/auth/session")
 async def create_or_read_session(request: Request, response: Response):
     principal = await get_current_principal(request)
+    if principal.auth_method == "password":
+        # Reading an established password session must not mint a new one from
+        # a freshly loaded hash: a concurrent password reset could otherwise
+        # upgrade the old session to the new credential version.
+        return {"authenticated": True, "auth_mode": principal.auth_method, "message": "Sessão validada."}
     await start_session(request, response, principal)
     return {"authenticated": True, "auth_mode": principal.auth_method, "message": "Sessão opaca criada no backend."}
 

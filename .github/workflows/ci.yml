@@ -36,6 +36,16 @@ jobs:
           uv run ruff check app tests
           uv run python -m compileall -q app tests
           uv run pytest -q
+      - name: Browser dependencies
+        working-directory: front-end
+        run: npx playwright install --with-deps chromium
+      - name: Browser flows and accessibility
+        working-directory: front-end
+        env:
+          SEMPERFI_TEST_PYTHON: ${{ github.workspace }}/back-end/.venv/bin/python
+        run: |
+          npm run test:browser
+          npm run test:browser:api
       - name: Build backend image
         run: docker build -t semperfi-api:ci back-end
       - name: Build frontend image

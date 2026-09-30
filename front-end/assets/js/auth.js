@@ -8,7 +8,7 @@
   const institutional = document.getElementById('institutionalLogin');
   const development = document.getElementById('developmentLogin');
   let capabilities = {}, busy = false, scriptsStarted = false;
-  let pendingVerification = null, verificationTimer = null, expiresAt = 0, resendAt = 0;
+  let pendingVerification = null, verificationTimer = null, expiresAt = 0, resendAt = 0, recoveryMode = false;
 
   function announce(message, error = false) {
     status.textContent = message;
@@ -26,7 +26,8 @@
     if (!response.ok) {
       let payload;
       try { payload = await response.json(); } catch (_) { /* Gateway may return HTML. */ }
-      const message = typeof payload?.detail === 'string' ? payload.detail
+      const message = response.status >= 500 ? 'O serviço está indisponível no momento. Tente novamente em alguns minutos.'
+        : typeof payload?.detail === 'string' ? payload.detail
         : response.status === 422 ? (path === '/auth/verify' ? 'Informe um código válido com seis dígitos.' : 'Confira os campos informados. Use um e-mail válido e uma senha de 12 a 128 caracteres.')
         : response.status === 429 ? 'Muitas tentativas. Aguarde alguns minutos e tente novamente.'
         : response.status === 401 ? 'E-mail ou senha inválidos. Tente novamente.'
@@ -74,6 +75,9 @@
   function refreshControls() {
     if (!isLogin) return;
     document.getElementById('passwordLogin').disabled = busy || !capabilities.password_enabled;
+    document.getElementById('forgotPassword').disabled = busy || !capabilities.password_recovery_enabled;
+    document.getElementById('requestRecovery').disabled = busy || !capabilities.password_recovery_enabled;
+    document.getElementById('cancelRecovery').disabled = busy;
     document.getElementById('createAccount').disabled = busy || !capabilities.registration_enabled;
     institutional.disabled = busy || !capabilities.oidc_enabled;
     development.disabled = busy || !capabilities.development_enabled;
@@ -100,11 +104,12 @@
   }
   function renderAccessPanels() {
     const register = document.getElementById('registerTab').getAttribute('aria-selected') === 'true';
-    document.querySelector('.auth-tabs').hidden = !!pendingVerification;
+    document.querySelector('.auth-tabs').hidden = !!pendingVerification || recoveryMode;
     document.getElementById('verificationPanel').hidden = !pendingVerification;
-    document.getElementById('loginPanel').hidden = !!pendingVerification || register;
-    document.getElementById('registerPanel').hidden = !!pendingVerification || !register;
-    document.getElementById('developmentAccess').hidden = !!pendingVerification || !capabilities.development_enabled;
+    document.getElementById('loginPanel').hidden = !!pendingVerification || recoveryMode || register;
+    document.getElementById('registerPanel').hidden = !!pendingVerification || recoveryMode || !register;
+    document.getElementById('recoveryPanel').hidden = !!pendingVerification || !recoveryMode;
+    document.getElementById('developmentAccess').hidden = !!pendingVerification || recoveryMode || !capabilities.development_enabled;
     document.getElementById('oidcAccess').hidden = !capabilities.oidc_enabled;
     document.getElementById('registerForm').hidden = !capabilities.registration_enabled;
     document.getElementById('registrationUnavailable').hidden = !!capabilities.registration_enabled;
@@ -127,13 +132,23 @@
     expiresAt = Date.now()+Math.max(0,Number(pending.expires_in)||0)*1000;
     resendAt = Date.now()+Math.max(0,Number(pending.resend_after)||0)*1000;
     document.getElementById('verificationForm').reset();
-    document.getElementById('verificationDestination').textContent = `Digite o código enviado ${pending.channel === 'sms' ? 'por SMS para' : 'para o e-mail'} ${pending.masked_destination}.`;
-    document.getElementById('access-heading').textContent = pending.purpose === 'register' ? 'Confirme seu cadastro' : 'Confirme seu acesso';
+    const resetting = pending.purpose === 'reset';
+    document.getElementById('resetPasswordFields').hidden = !resetting;
+    for (const id of ['resetPassword','resetConfirmation']) {
+      const input = document.getElementById(id); input.disabled = !resetting; input.required = resetting; input.setCustomValidity('');
+    }
+    document.getElementById('verificationForm').action = resetting ? '/v1/auth/password/reset' : '/v1/auth/verify';
+    document.getElementById('verifyAccount').textContent = resetting ? 'Salvar nova senha' : 'Confirmar e continuar →';
+    document.getElementById('verificationDestination').textContent = resetting
+      ? `Se houver uma conta elegível para ${pending.masked_destination}, enviaremos um código. Informe-o junto com sua nova senha.`
+      : `Digite o código enviado ${pending.channel === 'sms' ? 'por SMS para' : 'para o e-mail'} ${pending.masked_destination}.`;
+    document.getElementById('access-heading').textContent = resetting ? 'Redefina sua senha' : pending.purpose === 'register' ? 'Confirme seu cadastro' : 'Confirme seu acesso';
     document.getElementById('accessDescription').textContent = 'Sua segurança em mais uma etapa.';
-    document.title = 'Verificar acesso · SEMPER-FI';
+    document.title = `${resetting ? 'Redefinir senha' : 'Verificar acesso'} · SEMPER-FI`;
     renderAccessPanels(); tickVerification();
     verificationTimer = setInterval(tickVerification,1000);
-    announce(pending.delivery_failed ? 'O último envio falhou. Aguarde o intervalo e reenvie o código.' : 'Aguardando seu código de verificação.', !!pending.delivery_failed);
+    announce(resetting ? 'Se sua conta for elegível, confira o e-mail e a pasta de spam. Você também pode reenviar após o intervalo.'
+      : pending.delivery_failed ? 'O último envio falhou. Aguarde o intervalo e reenvie o código.' : 'Aguardando seu código de verificação.', !!pending.delivery_failed);
     if (focus) focusDestination(document.getElementById('verificationCode'),document.getElementById('account-access'));
   }
   async function cancelPending() {
@@ -182,6 +197,7 @@
   }
   function switchTab(register) {
     if (busy || pendingVerification) return;
+    recoveryMode = false;
     for (const [id, active] of [['login',!register],['register',register]]) {
       const tab = document.getElementById(`${id}Tab`);
       tab.setAttribute('aria-selected', String(active)); tab.tabIndex=active?0:-1;
@@ -190,9 +206,21 @@
     document.getElementById('access-heading').textContent = register ? 'Crie sua conta' : 'Bem-vindo de volta';
     document.getElementById('accessDescription').textContent = register ? 'Um espaço para sua atuação individual ou seu escritório.' : 'Acesse sua conta para continuar de onde parou.';
     document.title = `${register ? 'Criar conta' : 'Entrar'} · SEMPER-FI`;
+    renderAccessPanels();
     if (register) announce(capabilities.registration_enabled ? 'Preencha seus dados para começar.' : capabilities.registration_enabled === false ? 'Novos cadastros estão fechados. Solicite acesso ao administrador.' : 'Verifique a conexão para consultar as opções de cadastro.');
     else announce(capabilities.password_enabled ? 'Entre com seu e-mail e senha.' : capabilities.oidc_enabled
       ? 'Entre pelo provedor da sua organização.' : 'O acesso por conta ainda não está disponível. Procure o administrador.');
+  }
+  function showRecovery() {
+    if (busy || pendingVerification || !capabilities.password_recovery_enabled) return;
+    recoveryMode = true;
+    document.getElementById('loginPassword').value = '';
+    document.getElementById('access-heading').textContent = 'Recupere sua senha';
+    document.getElementById('accessDescription').textContent = 'Confirme seu e-mail para definir uma nova senha.';
+    document.title = 'Recuperar senha · SEMPER-FI';
+    renderAccessPanels(); refreshControls();
+    announce('Informe o e-mail usado para entrar na sua conta.');
+    focusDestination(document.getElementById('recoveryEmail'),document.getElementById('account-access'));
   }
   async function submitAccount(form, path, payload) {
     if (busy || pendingVerification || !form.reportValidity()) return;
@@ -244,6 +272,18 @@
       if (!capabilities.password_enabled) return;
       submitAccount(event.currentTarget,'/auth/login',{email:document.getElementById('loginEmail').value.trim(),password:document.getElementById('loginPassword').value,account_type:document.querySelector('[name="login_account_type"]:checked').value});
     });
+    document.getElementById('forgotPassword').addEventListener('click',()=>{
+      document.getElementById('recoveryEmail').value = document.getElementById('loginEmail').value;
+      showRecovery();
+    });
+    document.getElementById('cancelRecovery').addEventListener('click',()=>{
+      switchTab(false); focusDestination(document.getElementById('loginEmail'),document.getElementById('account-access'));
+    });
+    document.getElementById('recoveryForm').addEventListener('submit',event=>{
+      event.preventDefault();
+      if (!capabilities.password_recovery_enabled) return;
+      submitAccount(event.currentTarget,'/auth/password/forgot',{email:document.getElementById('recoveryEmail').value.trim()});
+    });
     const confirmation = document.getElementById('registerConfirmation');
     const validateConfirmation = () => confirmation.setCustomValidity(confirmation.value && confirmation.value !== document.getElementById('registerPassword').value ? 'As senhas precisam ser iguais.' : '');
     confirmation.addEventListener('input',validateConfirmation);
@@ -258,13 +298,30 @@
         email:document.getElementById('registerEmail').value.trim(),password:document.getElementById('registerPassword').value
       });
     });
+    const resetConfirmation = document.getElementById('resetConfirmation');
+    const validateResetConfirmation = () => resetConfirmation.setCustomValidity(resetConfirmation.value && resetConfirmation.value !== document.getElementById('resetPassword').value ? 'As senhas precisam ser iguais.' : '');
+    resetConfirmation.addEventListener('input',validateResetConfirmation);
+    document.getElementById('resetPassword').addEventListener('input',validateResetConfirmation);
     document.getElementById('verificationForm').addEventListener('submit',async event=>{
       event.preventDefault();
       const form = event.currentTarget;
+      validateResetConfirmation();
       if (busy || !pendingVerification || !form.reportValidity()) return;
       busy=true; refreshControls(); form.setAttribute('aria-busy','true'); announce('Confirmando seu código…');
       try {
-        const result = await request('/auth/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:document.getElementById('verificationCode').value.trim()})});
+        const resetting = pendingVerification.purpose === 'reset';
+        const payload = {code:document.getElementById('verificationCode').value.trim()};
+        if (resetting) payload.password = document.getElementById('resetPassword').value;
+        const result = await request(resetting ? '/auth/password/reset' : '/auth/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+        if (resetting) {
+          if (!result.password_reset) throw new Error('Não foi possível redefinir a senha. Tente novamente.');
+          clearInterval(verificationTimer); pendingVerification = null; form.reset();
+          document.getElementById('loginEmail').value = document.getElementById('recoveryEmail').value;
+          busy = false; switchTab(false);
+          announce('Senha redefinida. Entre com sua nova senha e confirme o código de acesso.');
+          focusDestination(document.getElementById('loginPassword'),document.getElementById('account-access'));
+          return;
+        }
         if (!result.authenticated) throw new Error('Não foi possível confirmar o acesso. Tente novamente.');
         clearInterval(verificationTimer); form.reset(); enterWorkspace();
       } catch (error) { announce(error.message,true); }
@@ -281,8 +338,10 @@
       finally { busy=false; refreshControls(); }
     });
     document.getElementById('cancelVerification').addEventListener('click',async()=>{
+      const resetting = pendingVerification?.purpose === 'reset';
       const register = pendingVerification?.purpose === 'register';
       if (!await cancelPending()) return;
+      if (resetting) { showRecovery(); return; }
       switchTab(register); focusDestination(document.getElementById(register?'registerTab':'loginTab'),document.getElementById('account-access'));
     });
     institutional.addEventListener('click',()=>{

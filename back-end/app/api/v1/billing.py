@@ -50,7 +50,11 @@ async def billing_status(response: Response, session: AsyncSession = Depends(get
     return {"provider": "asaas", "environment": "sandbox", "sandbox_only": True, "enabled": enabled,
         "can_checkout": enabled and can_manage and not active, "can_manage": can_manage,
         "subscription": {"plan_key": paid.plan_key, "status": "sandbox_paid", "paid_at": paid.paid_at} if paid else None,
-        "checkouts": [serialize_checkout(item) for item in rows],
+        "checkouts": [serialize_checkout(item) if can_manage else {
+            "plan_key": item.plan_key, "amount_cents": item.amount_cents,
+            "currency": item.currency, "status": item.status,
+            "created_at": item.created_at, "paid_at": item.paid_at,
+        } for item in rows],
         "production_entitlements": False,
         "limitations": ["Homologação: não movimenta valores reais nem libera franquias de produção.",
             "Renovação, alteração e cancelamento da assinatura ainda exigem conciliação no painel Sandbox."]}
@@ -60,6 +64,8 @@ async def billing_status(response: Response, session: AsyncSession = Depends(get
 async def checkout_status(checkout_id: uuid.UUID, response: Response, session: AsyncSession = Depends(get_db),
                           principal: Principal = Depends(get_current_principal)):
     response.headers["Cache-Control"] = "no-store"
+    if not principal.has_any_role("administrator"):
+        raise HTTPException(403, detail="A gestão dos pagamentos é restrita ao administrador.")
     item = await session.scalar(select(BillingCheckout).where(
         BillingCheckout.id == checkout_id, BillingCheckout.tenant_id == principal.tenant_id))
     if not item:

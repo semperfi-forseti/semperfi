@@ -19,10 +19,12 @@ const id = n => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const xss = '<img src=x onerror="window.__xss=1"> " & <script>window.__xss=1</script>';
 const today = new Date().toLocaleDateString('en-CA');
 const results = [], errors = [], unexpected = [], requests = [];
-let activeCase = 'startup', billingEnabled = true, checkoutUrl = 'https://sandbox.asaas.com/checkout/test-only';
+let activeCase = 'startup', billingEnabled = true, checkoutUrl = 'https://sandbox.asaas.com/checkoutSession/show?id=test-only';
 let agentCreated = false, agentEnabled = true, uploaded = false, reportError = true, queryPolls = 0;
+let radarCreated = false, evidenceFinalizeFails = false, evidencePreserved = false;
+const corporateFixture = {cnpj:'00000000000000',razao_social:xss,descricao_situacao_cadastral:'ATIVA',qsa:[{nome_socio:xss,cnpj_cpf_do_socio:'00000000000',qualificacao_socio:'Sócio'}]};
 const state = {
-  clients: [{id:id(1),name:xss,type:'PF',document:'00000000000',email:'fixture@example.test',phone:'',address:'',notes:xss,responsible:'',status:'ativo',createdAt:Date.now()},
+  clients: [{id:id(1),name:xss,type:'PF',document:'123.456.789-01',email:'fixture@example.test',phone:'',address:'',notes:xss,responsible:'',status:'ativo',createdAt:Date.now()},
     {id:id(2),name:'Outro registro isolado',type:'PJ',document:'00000000000000',status:'ativo',createdAt:Date.now()}],
   processes: [{id:id(3),clientId:id(1),number:'0000000-00.2026.8.00.0000',court:xss,area:'Cível',phase:'Inicial',status:'ativo',responsible:'',notes:xss,value:0,createdAt:Date.now()}],
   intimations: [{id:id(4),processId:id(3),source:xss,type:'despacho',content:xss,receivedAt:'2026-09-25T12:00:00Z',confidence:'media',status:'triagem',createdAt:Date.now()}],
@@ -33,6 +35,8 @@ const state = {
 const agent = () => ({id:id(6),agent_type:'timeline',status:'pending_human_review',model_name:'local-test',input_safe:{text:xss},output:{analysis:xss},limitations:['Revisão humana obrigatória']});
 const evidence = () => ({id:id(7),original_filename:'teste-isolado.pdf',validation_status:'pending',mime_type:'application/pdf',size_bytes:24,sha256:'a'.repeat(64),storage_key:null});
 const reports = [{id:id(8),title:xss,version:1,status:'DRAFT',body:{summary:xss}}, {id:id(9),title:'Relatório aprovado isolado',version:1,status:'FINAL',body:{summary:'Revisado'}}];
+let documentLinks=[], engineRuns=[], invitations=[];
+let teamMember={id:id(30),display_name:xss,email:'member@example.test',role:'lawyer',role_label:'Advogado',is_active:true,account_active:true,is_self:false};
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const server = http.createServer(async (req, res) => {
   try {
@@ -55,6 +59,23 @@ async function mock(route, origin) {
   const reply = (json, status = 200) => route.fulfill({json,status});
   if (pathname === '/v1/auth/status') return reply({authenticated:true,password_enabled:true,registration_enabled:true});
   if (pathname === '/v1/frontend/bootstrap') return reply({data:state,me:{display_name:'Operador isolado',email:'fixture@example.test',roles:['administrator']}});
+  if (pathname === '/v1/organization/mine') return reply({items:[{tenant_id:id(31),name:'Escritório isolado',role:'administrator',role_label:'Administrador',current:true}],can_manage:true});
+  if (pathname === '/v1/organization/members') return reply({items:[teamMember],total:1,offset:0,limit:100});
+  if (pathname === `/v1/organization/members/${id(30)}` && method==='PATCH') {teamMember={...teamMember,...body};return reply(teamMember);}
+  if (pathname === '/v1/organization/invitations' && method==='GET') return reply({items:invitations});
+  if (pathname === '/v1/organization/invitations' && method==='POST') {const invitation={id:id(32),email:body.email,role:body.role,role_label:'Advogado',status:'pending',expires_at:'2026-10-07T12:00:00Z'};invitations=[invitation];return reply({token:'a'.repeat(43),invitation,delivery:'manual'},201);}
+  if (pathname === `/v1/organization/invitations/${id(32)}` && method==='DELETE') {invitations[0].status='revoked';return route.fulfill({status:204});}
+  if (/^\/v1\/(clients|processes)\/[^/]+\/documents(?:\/[^/]+)?$/.test(pathname)) {
+    if(method==='GET')return reply(documentLinks);
+    if(method==='POST'){documentLinks=[{id:id(33),evidence_id:id(7),filename:xss,label:body.label,validation_status:'pending'}];return reply(documentLinks[0]);}
+    if(method==='DELETE'){documentLinks=[];return route.fulfill({status:204});}
+  }
+  if (pathname==='/v1/investigation-engines/runs') return reply(engineRuns);
+  if (/^\/v1\/investigation-engines\/(tacer|siera)\/run$/.test(pathname)) {
+    await delay(80);const saved={id:id(34),run_id:id(34),engine:'tacer',created_at:'2026-09-30T12:00:00Z',review_status:'pending',input_safe:body,result:{stages:[{code:'T',objective:xss}]}};engineRuns=[saved];return reply(saved);
+  }
+  if (pathname===`/v1/investigation-engines/runs/${id(34)}`)return reply(engineRuns[0]);
+  if (pathname===`/v1/investigation-engines/runs/${id(34)}/review`) {engineRuns[0]={...engineRuns[0],review_status:body.decision,review_notes:body.notes,reviewed_at:'2026-09-30T12:01:00Z'};return reply(engineRuns[0]);}
   if (pathname === '/v1/clients' && method === 'POST') {
     await delay(100); const saved = {id:id(10),name:body.name,type:body.kind,document:body.document,email:body.email,status:body.status,createdAt:Date.now()}; state.clients.push(saved); return reply({id:saved.id},201);
   }
@@ -67,11 +88,16 @@ async function mock(route, origin) {
     if(body.appointment)state.appointments.push({id:id(14),processId:id(3),clientId:id(1),title:body.appointment.title,date:body.appointment.appointment_date,time:body.appointment.appointment_time,status:'confirmado',type:'reuniao'});
     return reply({intimation_id:id(4),movement_id:id(12),already_launched:false,status:'concluded'},201);
   }
-  if (pathname === '/v1/osint/runs' && method === 'POST') {queryPolls=0;return reply({run_id:'query-fixture',job_id:'job-fixture',status:'queued'},202);}
+  if (pathname === '/v1/osint/runs' && method === 'POST') {
+    if(body.investigation_id){radarCreated=true;return reply({run_id:'radar-fixture',status:'queued'},202);}
+    queryPolls=0;return reply({run_id:'query-fixture',job_id:'job-fixture',status:'queued'},202);
+  }
+  if (pathname === '/v1/osint/runs' && method === 'GET' && url.searchParams.get('kind')==='cnpj') return reply(radarCreated?[{id:'radar-fixture',connector_id:'brasilapi',status:'completed',purpose:xss,normalized_result:{razao_social:xss},created_at:'2026-09-29T12:00:00Z'}]:[]);
+  if (pathname === '/v1/osint/runs/radar-fixture') return reply({id:'radar-fixture',status:'completed',raw_snapshot:corporateFixture});
   if (pathname === '/v1/osint/runs/query-fixture') return reply(++queryPolls===1 ? {run_id:'query-fixture',status:'running'} : {run_id:'query-fixture',status:'completed',raw_snapshot:{razao_social:xss}});
-  if (pathname === '/v1/billing/status') return reply({enabled:billingEnabled,can_checkout:billingEnabled,environment:'sandbox',sandbox_only:true,checkouts:[{plan_key:'lite',status:'PENDING',checkout_url:'https://attacker.invalid/test'}]});
-  if (pathname === '/v1/billing/catalog') return reply({plans:[{key:'lite',name:'Lite',price:89.90}]});
-  if (pathname === '/v1/billing/checkouts') {await delay(80);return reply({id:id(15),environment:'sandbox',checkout_url:checkoutUrl},201);}
+  if (pathname === '/v1/billing/status') return reply({enabled:billingEnabled,can_checkout:billingEnabled,can_manage:true,environment:'sandbox',sandbox_only:true,checkouts:[{plan_key:'lite',status:'PENDING',checkout_url:'https://attacker.invalid/test'}]});
+  if (pathname === '/v1/billing/catalog') return reply({environment:'sandbox',sandbox_only:true,plans:[{key:'lite',name:'Lite',price:89.90}]});
+  if (pathname === '/v1/billing/checkouts') {await delay(80);return reply({id:id(15),environment:'sandbox',sandbox_only:true,status:'open',checkout_url:checkoutUrl},201);}
   if (pathname === '/v1/agents/status') return reply({enabled:agentEnabled,provider:'ollama',model:'local-test'});
   if (pathname === '/v1/agents/runs' && method === 'POST') {await delay(80);agentCreated=true;return reply({agent_run_id:id(6),status:'queued'},202);}
   if (pathname === '/v1/agents/runs') return reply(agentCreated?[agent()]:[]);
@@ -79,15 +105,19 @@ async function mock(route, origin) {
   if (pathname === '/v1/evidences') return reply(uploaded?[evidence()]:[]);
   if (pathname === '/v1/evidences/uploads') {uploaded=true;return reply({evidence_id:id(7),status:'pending'},201);}
   if (pathname === `/v1/evidences/${id(7)}/events`) return reply([{event_type:'uploaded',details:xss}]);
+  if (pathname === `/v1/evidences/${id(7)}/finalize`) {if(evidenceFinalizeFails)return reply({detail:'Cofre indisponível para teste.'},503);evidencePreserved=true;return reply({id:id(7),status:'preserved'});}
   if (pathname === '/v1/reports') return reply(reports);
-  if (pathname === `/v1/reports/${id(8)}/approve`) return reportError ? reply({detail:{policy_code:'MFA_REAUTH_REQUIRED',reason:'Confirmação de segurança recente necessária.'}},403) : reply({status:'FINAL'});
+  if (pathname === `/v1/reports/${id(8)}/approve`) return reportError ? reply({detail:{policy_code:'MFA_REAUTH_REQUIRED',reason:'Confirme seu acesso novamente necessária.'}},403) : reply({status:'FINAL'});
   if (pathname === `/v1/reports/${id(9)}/download`) return reportError ? reply({detail:'Cofre indisponível para teste.'},503) : reply({url:'javascript:window.__xss=1',expires_in_seconds:60});
   if (['/v1/audit-events','/v1/osint/runs','/v1/catalog/connectors','/v1/connectors'].includes(pathname)) return reply([]);
   unexpected.push(`${method} ${pathname}`);return reply({detail:'Unmocked test route'},501);
 }
 const count = (method, pathname) => requests.filter(r=>r.method===method&&r.path===pathname).length;
 const last = pathname => requests.filter(r=>r.path===pathname).at(-1);
-async function waitText(page, selector, text) { await page.waitForFunction(({selector,text})=>document.querySelector(selector)?.textContent.includes(text),{selector,text}); }
+async function waitText(page, selector, text) {
+  try { await page.waitForFunction(({selector,text})=>document.querySelector(selector)?.textContent.includes(text),{selector,text}); }
+  catch (_) { throw Error(`${selector}: expected ${text}; received ${await page.locator(selector).textContent()}`); }
+}
 async function navigate(page, section) {await page.evaluate(section=>navigateSection(section),section);await page.locator('#contentWrapper > :first-child').waitFor();}
 async function contextFields(page, prefix) {await page.locator(`#${prefix}Purpose`).fill('Teste isolado de integração da interface');await page.locator(`#${prefix}Basis`).selectOption('legitimo_interesse');await page.locator(`#${prefix}Reference`).fill('TESTE-ISOLADO');await page.locator(`#${prefix}Investigation`).selectOption(id(5));}
 async function runCase(name, page, operation) {
@@ -113,6 +143,16 @@ async function runCase(name, page, operation) {
       await page.evaluate(()=>renderNotifications());await delay(60);
       assert.equal(await page.locator('#notifList img').count(),0);
       assert.ok((await page.locator('#notifList').textContent()).includes('<img'));
+    });
+    await runCase('Global search protects records and query, masks documents, and supports keyboard',page,async()=>{
+      await page.evaluate(query=>{SETTINGS.masked=true;runGlobalSearch(query);},'<img');
+      assert.equal(await page.locator('#modalContent img').count(),0);
+      assert.ok((await page.locator('#modalContent').innerText()).includes('<img'));
+      assert.ok(!(await page.locator('#modalContent').innerText()).includes('00000000000'));
+      assert.ok((await page.locator('#modalContent').innerText()).includes('***.***.***-01'));
+      const result=page.locator('#modalContent .modal-body button').first();
+      await result.focus();await page.keyboard.press('Enter');
+      await page.waitForFunction(()=>appState.currentSection==='clients'&&!document.getElementById('modal').classList.contains('active'));
     });
     await runCase('All 21 sections render with API fixtures',page,async()=>{
       const sections=await page.evaluate(()=>SECTIONS.map(item=>item.id));assert.equal(sections.length,21);
@@ -146,6 +186,25 @@ async function runCase(name, page, operation) {
       await page.waitForFunction(()=>!document.getElementById('modal').classList.contains('active'));
       assert.equal(count('POST','/v1/clients'),1);assert.equal(last('/v1/clients').body.name,'Cliente de teste isolado');
     });
+    await runCase('Client and process details open without incomplete editing controls',page,async()=>{
+      await page.evaluate(clientId=>showClientDetail(clientId),id(1));
+      await page.locator('#modal.active').waitFor();
+      assert.equal(await page.locator('#modal textarea').count(),0);
+      assert.equal(await page.locator('#modal button').filter({hasText:/Salvar biografia|Arquivar documento|Vincular empresa/}).count(),0);
+      await page.evaluate(()=>switchClientTab('links'));
+      assert.ok(await page.locator('#modal a').count()>0);
+      await page.evaluate(()=>closeModal());
+      await page.evaluate(processId=>showProcessDetail(processId),id(3));
+      await page.locator('#modal.active').waitFor();
+      assert.ok((await page.locator('#modal').innerText()).includes('0000000-00.2026.8.00.0000'));
+    });
+    await runCase('OSINT result opens a supervised AI draft without executing it',page,async()=>{
+      const before=count('POST','/v1/agents/runs');
+      await page.evaluate(()=>{osintToolsState.lastResult={ok:true,data:{summary:'Resultado isolado para revisão'}};analyzeWithAI();});
+      assert.equal(await page.locator('#agentType').inputValue(),'correlation');
+      assert.ok((await page.locator('#agentInput').inputValue()).includes('Resultado isolado para revisão'));
+      assert.equal(count('POST','/v1/agents/runs'),before);
+    });
     await runCase('Appointment process selection aligns and locks client',page,async()=>{
       await navigate(page,'agenda');await page.evaluate(()=>openAppointmentForm());await page.locator('#f_clientId').selectOption(id(2));await page.locator('#f_processId').selectOption(id(3));
       assert.equal(await page.locator('#f_clientId').inputValue(),id(1));assert.equal(await page.locator('#f_clientId').isDisabled(),true);
@@ -164,39 +223,132 @@ async function runCase(name, page, operation) {
     });
     await runCase('Queued public query polls existing job without a second POST',page,async()=>{
       await navigate(page,'queries');await page.locator('#queryInput').fill('00000000000000');await page.locator('#queryPurpose').fill('Verificar cadastro isolado');await page.locator('#queryConsent').check();
-      await page.locator('#btnQuery').evaluate(button=>{button.click();button.click();});await waitText(page,'#queryResult','razao_social');
+      await page.locator('#btnQuery').evaluate(button=>{button.click();button.click();});await waitText(page,'#queryResult','Razão social');
       assert.equal(count('POST','/v1/osint/runs'),1);assert.equal(queryPolls,2);assert.equal(await page.locator('#queryResult img').count(),0);
+    });
+    await runCase('Radar saves a query through the API and reopens history after reload without POST',page,async()=>{
+      await navigate(page,'societario');const before=count('POST','/v1/osint/runs');
+      await page.locator('#radarCnpj').fill('abcdefghijklmn');
+      assert.equal(await page.locator('#radarCnpj').evaluate(input=>input.checkValidity()),false);
+      await page.locator('#radarCnpj').fill('00000000000000');await contextFields(page,'radar');
+      await page.locator('#radarForm button[type=submit]').evaluate(button=>{button.click();button.click();});
+      await waitText(page,'#radarStatus','Consulta concluída e registrada');
+      assert.equal(count('POST','/v1/osint/runs'),before+1);
+      const submitted=requests.filter(r=>r.path==='/v1/osint/runs'&&r.method==='POST').at(-1);
+      assert.equal(submitted.body.investigation_id,id(5));assert.equal(submitted.body.payload.kind,'cnpj');
+      assert.equal(await page.locator('#radarResult img').count(),0);
+      assert.equal(await page.locator('#radarResult svg').getAttribute('viewBox'),'0 0 720 380');
+      assert.ok(!(await page.locator('#radarResult').innerText()).includes('00000000000000'));
+      await page.reload();await page.locator('body:not(.auth-pending) .page-title').waitFor();await navigate(page,'societario');
+      await page.locator('[data-radar-run]').click();await waitText(page,'#radarStatus','Consulta concluída e registrada');
+      assert.equal(count('POST','/v1/osint/runs'),before+1);assert.equal(await page.locator('#radarHistory img').count(),0);
+    });
+    await runCase('DNS outage does not announce success and keeps the entered target',page,async()=>{
+      await navigate(page,'osinttools');await page.evaluate(()=>selectOsintTool('dns'));
+      await page.locator('#otTarget').fill('example.test');await page.locator('#otConsent').check();await page.evaluate(()=>runOsintTool());
+      await waitText(page,'#otResult','Nenhum resultado foi confirmado');
+      assert.equal(await page.locator('#otTarget').inputValue(),'example.test');assert.equal(await page.locator('#otResult .alert-success').count(),0);
+    });
+    await runCase('Evidence finalization can retry its receipt without another upload',page,async()=>{
+      await page.evaluate(()=>{selectOsintTool('dns');osintToolsState.lastResult={ok:true,tool:{name:'DNS',kind:'dns'},target:'example.test',data:{A:[]},at:Date.now()};renderSection('osinttools');});
+      const before=count('POST','/v1/evidences/uploads');evidenceFinalizeFails=true;
+      await page.locator('button[onclick="preserveOsintResult()"]').evaluate(button=>{button.click();button.click();});
+      await waitText(page,'#otResult','Retomar preservação');assert.equal(count('POST','/v1/evidences/uploads'),before+1);
+      assert.equal(await page.evaluate(()=>osintToolsState.lastResult.preserved),false);
+      evidenceFinalizeFails=false;await page.locator('button[onclick="preserveOsintResult()"]').click();await waitText(page,'#otResult','Evidência preservada');
+      assert.equal(count('POST','/v1/evidences/uploads'),before+1);assert.equal(evidencePreserved,true);
+      assert.equal(await page.locator('button[onclick="preserveOsintResult()"]').isDisabled(),true);
     });
     await runCase('Sandbox checkout rejects hostile links and honors disabled configuration',page,async()=>{
       await navigate(page,'billing');await page.locator('#billingPlan').waitFor();assert.equal(await page.locator('#billingCheckout a').count(),0);
-      await page.locator('#billingCheckout input[type=checkbox]').check();checkoutUrl='https://sandbox.asaas.com.attacker.invalid/test';await page.locator('#billingCheckout button[type=submit]').click();await waitText(page,'[data-checkout-result]','endereço Sandbox válido');assert.equal(await page.locator('[data-checkout-result] a').count(),0);
-      checkoutUrl='https://sandbox.asaas.com/checkout/test-only';await page.locator('#billingCheckout button[type=submit]').click();await page.locator('[data-checkout-result] a').waitFor();
+      await page.locator('#billingCheckout input[type=checkbox]').check();checkoutUrl='https://sandbox.asaas.com.attacker.invalid/test';await page.locator('#billingCheckout button[type=submit]').click();await waitText(page,'[data-checkout-result]','Atualize a situação antes de tentar novamente');assert.equal(await page.locator('[data-checkout-result] a').count(),0);
+      checkoutUrl='https://sandbox.asaas.com/checkoutSession/show?id=test-only';await page.locator('#billingCheckout button[type=submit]').click();await page.locator('[data-checkout-result] a').waitFor();
       assert.equal(await page.locator('[data-checkout-result] a').getAttribute('href'),checkoutUrl);
       const attempts=requests.filter(r=>r.path==='/v1/billing/checkouts');assert.equal(attempts[0].body.request_id,attempts[1].body.request_id);
-      billingEnabled=false;await navigate(page,'billing');await waitText(page,'[data-billing-content]','Aguardando configuração');assert.equal(await page.locator('#billingCheckout form').count(),0);
+      billingEnabled=false;await navigate(page,'billing');await waitText(page,'[data-billing-content]','ainda não estão disponíveis');assert.equal(await page.locator('#billingCheckout form').count(),0);
     });
     await runCase('Ollama input is posted once and result requires human review',page,async()=>{
-      await navigate(page,'agentes');await waitText(page,'#agentsAvailability','Ollama configurado');await page.locator('#agentType').selectOption('timeline');await page.locator('#agentInput').fill(xss);await contextFields(page,'agent');await page.locator('#agentRunForm input[type=checkbox]').check();
+      await navigate(page,'agentes');await waitText(page,'#agentsAvailability','A assistência está configurada');await page.locator('#agentType').selectOption('timeline');await page.locator('#agentInput').fill(xss);await contextFields(page,'agent');await page.locator('#agentRunForm input[type=checkbox]').check();
       await page.locator('#agentRunForm button[type=submit]').evaluate(button=>{button.click();button.click();});await waitText(page,'#agentSubmitStatus','disponível para revisão humana');
       assert.equal(count('POST','/v1/agents/runs'),1);assert.equal(last('/v1/agents/runs').method,'GET');const sent=requests.find(r=>r.path==='/v1/agents/runs'&&r.method==='POST');assert.equal(sent.body.input_safe.text,xss);assert.equal(sent.body.investigation_id,id(5));assert.equal(await page.locator('#agentRuns img').count(),0);await waitText(page,'#agentRuns','Aguardando revisão humana');
-      agentEnabled=false;await navigate(page,'agentes');await waitText(page,'#agentsAvailability','aguarda configuração');assert.equal(await page.locator('#agentRunForm button[type=submit]').isDisabled(),true);
+      agentEnabled=false;await navigate(page,'agentes');await waitText(page,'#agentsAvailability','aguarda habilitação');assert.equal(await page.locator('#agentRunForm button[type=submit]').isDisabled(),true);
     });
     await runCase('Evidence upload uses multipart and custody events stay literal',page,async()=>{
       await navigate(page,'metadata');await page.locator('#evidenceOriginal').setInputFiles({name:'teste-isolado.pdf',mimeType:'application/pdf',buffer:Buffer.from('%PDF-1.4 isolated fixture')});await contextFields(page,'evidence');await page.locator('#evidenceUploadForm button[type=submit]').click();await waitText(page,'#evidenceUploadStatus','Arquivo recebido');
       const upload=last('/v1/evidences/uploads');assert.match(upload.headers['content-type'],/^multipart\/form-data; boundary=/);assert.match(upload.body,/name="file"; filename="teste-isolado.pdf"/);assert.match(upload.body,/name="purpose"/);assert.match(upload.body,/name="investigation_id"/);
-      await page.locator('[data-evidence-action=events]').click();await waitText(page,'#evidenceActionStatus','Histórico consultado');assert.equal(await page.locator('[data-evidence-detail] img').count(),0);assert.ok((await page.locator('[data-evidence-detail]').innerText()).includes('uploaded'));
+      await page.locator('[data-evidence-action=events]').click();await waitText(page,'#evidenceActionStatus','Histórico consultado');assert.equal(await page.locator('[data-evidence-detail] img').count(),0);assert.ok((await page.locator('[data-evidence-detail]').innerText()).includes('Arquivo recebido'));
     });
     await runCase('Report approval and download failures are visible and retryable',page,async()=>{
-      await navigate(page,'reports');await page.locator('[data-report-action=approve]').waitFor();await page.locator('[data-report-action=approve]').click();await waitText(page,'#reportsStatus','Confirmação de segurança recente');assert.equal(await page.locator('[data-report-action=approve]').isDisabled(),false);
+      await navigate(page,'reports');await page.locator('[data-report-action=approve]').waitFor();await page.locator('[data-report-action=approve]').click();await waitText(page,'#reportsStatus','Confirme seu acesso novamente');assert.equal(await page.locator('[data-report-action=approve]').isDisabled(),false);
       await page.locator('[data-report-action=download]').click();await waitText(page,'#reportsStatus','Cofre indisponível');reportError=false;await page.locator('[data-report-action=download]').click();await waitText(page,'#reportsStatus','Endereço de download inválido');assert.equal(await page.locator('#reportsStatus a').count(),0);
+    });
+    await runCase('Document links persist across reopening and detach without deleting the original',page,async()=>{
+      await page.evaluate(clientId=>{showClientDetail360(clientId);switchClientTab('documentos');},id(1));
+      await page.locator('#legalDocumentSelect').selectOption(id(7));await page.locator('#legalDocumentLabel').fill('Mandato '+xss);
+      await page.locator('[data-link-form] button[type=submit]').click();await waitText(page,'#legalDocumentsPanel','Vínculo salvo');
+      assert.equal(await page.locator('#legalDocumentsPanel img').count(),0);
+      assert.equal(await page.locator('[data-download]').count(),0,'Pending evidence cannot download');
+      await page.evaluate(()=>{switchClientTab('visao');switchClientTab('documentos');});await page.locator('[data-unlink]').waitFor();
+      await page.locator('[data-unlink]').click();await waitText(page,'#legalDocumentsPanel','Vínculo removido');
+      assert.equal(count('DELETE',`/v1/evidences/${id(7)}`),0);assert.equal(uploaded,true);
+    });
+    await runCase('Team controls change a membership and create or revoke a manual invitation',page,async()=>{
+      await navigate(page,'settings');await page.locator('#organizationInviteEmail').waitFor();
+      assert.equal(await page.locator('#organizationPanel img').count(),0);
+      await page.locator('[data-member-toggle]').click();await waitText(page,'#organizationStatus','Acesso suspenso');
+      await page.locator('[data-member-toggle]').click();await waitText(page,'#organizationStatus','Acesso reativado');
+      await page.locator('#organizationInviteEmail').fill('recipient@example.test');await page.locator('#organizationInviteForm button[type=submit]').click();
+      await page.locator('[data-revoke-invitation]').waitFor();assert.equal(invitations.length,1);
+      assert.ok((await page.locator('#organizationShare').textContent()).includes('Convite criado'));
+      assert.equal(await page.evaluate(()=>Object.values(localStorage).some(value=>value.includes('a'.repeat(43)))),false);
+      await page.locator('[data-revoke-invitation]').click();await waitText(page,'#organizationInvitations','Revogado');
+    });
+    await runCase('Investigation plans save once, reopen from history and record human review',page,async()=>{
+      await page.evaluate(invId=>{const inv=DB.investigations.find(row=>row.id===invId);inv.status='em_coleta';inv.scope=['empresarial'];openInvestigationWorkspace(invId);switchOsintTab('motores');},id(5));
+      await page.locator('#investigationEngines summary').click();
+      assert.equal(await page.locator('#engineInvestigation').inputValue(),id(5),'Planning defaults to the open investigation');
+      await page.locator('#engineTarget').fill(xss);await page.locator('#enginePurpose').fill('Planejamento autorizado para teste isolado');
+      await page.locator('#engineBasis').selectOption('legitimo_interesse');await page.locator('#engineReference').fill('REF-TESTE');
+      await page.locator('[name=declared_scope]').first().check();await page.locator('[name=acknowledge]').check();
+      await page.locator('[data-engine-form] button[type=submit]').evaluate(button=>{button.click();button.click();});
+      await page.locator('[data-engine-review]').waitFor();assert.equal(count('POST','/v1/investigation-engines/tacer/run'),1);
+      assert.equal(last('/v1/investigation-engines/tacer/run').body.investigation_id,id(5));
+      assert.equal(await page.locator('#investigationEngines img').count(),0);
+      await page.locator('#engineReviewNotes').fill('Planejamento revisado por responsável do teste');await page.locator('[data-engine-review] button').click();
+      await waitText(page,'[data-engine-detail]','Revisão humana registrada');
+      await page.evaluate(()=>{switchOsintTab('overview');switchOsintTab('motores');});await page.locator('[data-engine-open]').click();
+      await waitText(page,'[data-engine-detail]','Planejamento revisado por responsável do teste');
+      assert.equal(await page.locator('[data-engine-review]').count(),0);
     });
     await runCase('New forms expose accessible names (axe WCAG A/AA)',page,async()=>{
       await page.addScriptTag({content:dependency('axe-core').source});
-      for(const section of ['agentes','metadata','transparencia','billing']){
+      for(const section of ['agentes','metadata','transparencia','billing','societario','settings']){
         await navigate(page,section);await delay(60);
         const violations=await page.evaluate(async()=>{const result=await axe.run('#contentWrapper',{runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21aa']},rules:{'color-contrast':{enabled:false}}});return result.violations.map(v=>({id:v.id,targets:v.nodes.map(n=>n.target)}));});
         assert.deepEqual(violations,[],section);
       }
+    });
+    await runCase('Ordinary profiles do not see administrative diagnostics',page,async()=>{
+      await page.evaluate(()=>{SETTINGS.userProfile='lawyer';});
+      for(const section of ['agentes','metadata','reports','audit']){
+        await navigate(page,section);await delay(80);
+        assert.equal(await page.locator('#contentWrapper summary').filter({hasText:'Diagnóstico administrativo'}).count(),0,section);
+        const text=await page.locator('#contentWrapper').innerText();
+        assert.ok(!text.includes('local-test'),section+' exposed model name');
+        assert.ok(!text.includes(id(6)),section+' exposed run ID');
+      }
+      await page.evaluate(()=>{SETTINGS.userProfile='administrator';});
+    });
+    await runCase('Mobile large-text controls remain reachable',page,async()=>{
+      await page.setViewportSize({width:320,height:740});
+      await page.evaluate(()=>SemperfiAccessibility.setPreferences({theme:'light',textSize:200,spacing:true}));
+      for(const section of ['agentes','metadata','reports','billing','calculators','settings','societario']){
+        await navigate(page,section);await delay(80);
+        const width=await page.evaluate(()=>({content:document.documentElement.scrollWidth,viewport:window.innerWidth}));
+        assert.ok(width.content<=width.viewport+1,`${section} horizontal overflow: ${JSON.stringify(width)}`);
+      }
+      await page.evaluate(()=>SemperfiAccessibility.setPreferences({theme:'system',textSize:100,spacing:false}));
+      await page.setViewportSize({width:1440,height:1000});
     });
     assert.deepEqual(errors,[],'Browser runtime errors');assert.deepEqual(unexpected,[],'Unmocked API routes');
     const stored=await page.evaluate(()=>Object.keys(localStorage).filter(key=>!['semperfi_settings_v1','semperfi_accessibility_v1'].includes(key)));assert.deepEqual(stored,[],'Operational records leaked to browser storage');

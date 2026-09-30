@@ -6,14 +6,14 @@ const vm = require('node:vm');
 const source = readFileSync(join(__dirname,'../assets/js/audit-view.js'),'utf8');
 
 const event = (changes = {}) => ({id:'event-test',action:'client.create',resource_type:'client',resource_id:'resource-test',result:'success',correlation_id:'request-test',occurred_at:'2026-09-23T12:00:00Z',event_hash:'a'.repeat(64),...changes});
-function harness(responses) {
+function harness(responses,roles=['auditor'],verified=true) {
   const elements = new Map(), calls = [];
   const element = id => {
     if (!elements.has(id)) elements.set(id,{value:id==='auditLimit'?'100':'',innerHTML:'',textContent:'',disabled:false,attributes:{},handlers:{},classList:{toggle(){}},setAttribute(name,value){this.attributes[name]=value;},addEventListener(name,listener){this.handlers[name]=listener;},focus(){this.focused=true;}});
     return elements.get(id);
   };
   const panel = {isConnected:true,querySelector:selector=>element(selector.slice(1))};
-  const context = vm.createContext({AbortController,Intl,Date,document:{getElementById:()=>panel},window:{setTimeout,clearTimeout},fetch:async(url,options)=>{
+  const context = vm.createContext({AbortController,Intl,Date,backendState:{bootstrapLoaded:verified},SETTINGS:{userProfile:roles.join(', ')},document:{getElementById:()=>panel},window:{setTimeout,clearTimeout},fetch:async(url,options)=>{
     calls.push({url,options});
     const next = responses.shift();
     if (typeof next === 'function') return next();
@@ -21,7 +21,7 @@ function harness(responses) {
     return {ok:next.status == null || next.status < 400,status:next.status || 200,json:async()=>next.data};
   }});
   vm.runInContext(source,context);
-  return {api:context.window.SemperfiAudit,panel,element,calls};
+  return {api:context.window.SemperfiAudit,panel,element,calls,window:context.window};
 }
 
 test('audit view consumes persisted event fields and escapes server content',async()=>{
@@ -31,15 +31,16 @@ test('audit view consumes persisted event fields and escapes server content',asy
   assert.equal(h.calls[0].url,'/v1/audit-events?limit=100');
   assert.equal(h.calls[0].options.credentials,'same-origin');
   assert.equal(h.calls[0].options.cache,'no-store');
-  assert.match(h.element('auditRows').innerHTML,/&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.match(h.element('auditRows').innerHTML,/Operação registrada/);
   assert.doesNotMatch(h.element('auditRows').innerHTML,/<img/);
+  assert.doesNotMatch(h.element('auditRows').innerHTML,/event-test|resource-test|request-test|Diagnóstico administrativo/);
   assert.doesNotMatch(h.element('auditRows').innerHTML,/<th[^>]*>Ator/);
   assert.match(h.element('auditAction').innerHTML,/&lt;img/);
   h.element('auditResource').value='process';
   h.element('auditResource').handlers.change();
   assert.match(h.element('auditCount').textContent,/1 de 2/);
   assert.doesNotMatch(h.element('auditRows').innerHTML,/&lt;img/);
-  h.element('auditSearch').value='request-test';
+  h.element('auditSearch').value='Processo';
   h.element('auditSearch').handlers.input();
   assert.match(h.element('auditCount').textContent,/1 de 2/);
   h.element('auditClearFilters').handlers.click();
@@ -47,6 +48,20 @@ test('audit view consumes persisted event fields and escapes server content',asy
   assert.match(h.element('auditCount').textContent,/2 de 2/);
   await h.api.mount();
   assert.equal(h.calls.length,1,'mount is idempotent for the same panel');
+});
+
+test('printed audit report loads persisted events, masks internals and stops on denied access',async()=>{
+  const h=harness([{data:[event()]},{status:403,data:{detail:'Acesso de auditoria restrito.'}}]);
+  const target={opener:{},closed:false,printed:0,document:{write(){},close(){},body:{innerHTML:'',textContent:''},head:{append(){}},createElement(){return {}; }},print(){this.printed++;}};
+  h.window.open=()=>target;
+  await h.api.printReport();
+  assert.equal(h.calls[0].url,'/v1/audit-events?limit=500');
+  assert.match(target.document.body.innerHTML,/Cadastro/);
+  assert.doesNotMatch(target.document.body.innerHTML,/event-test|resource-test|request-test/);
+  assert.equal(target.opener,null);assert.equal(target.printed,1);
+  await h.api.printReport();
+  assert.equal(target.printed,1);assert.match(target.document.body.textContent,/restrito/);
+  h.window.open=()=>null;await h.api.printReport();assert.equal(h.calls.length,2);
 });
 
 test('audit reload keeps old records on failure and indicates they may be stale',async()=>{
@@ -76,10 +91,29 @@ test('verification uses POST, handles MFA rejection and reports a broken chain a
   await h.element('auditVerify').handlers.click();
   assert.equal(h.element('auditVerifyStatus').attributes.role,'alert');
   assert.match(h.element('auditVerifyStatus').textContent,/Inconsistência.*3 eventos/);
+  assert.doesNotMatch(h.element('auditVerifyStatus').textContent,/script|untrusted/);
   assert.equal(h.element('auditVerifyStatus').innerHTML,'','server values are assigned as text, not HTML');
   await h.element('auditVerify').handlers.click();
   assert.match(h.element('auditVerifyStatus').textContent,/Nenhum evento existia/);
   assert.doesNotMatch(h.element('auditVerifyStatus').textContent,/Cadeia consistente/);
+});
+
+test('administrative identifiers appear only in closed details after an exact verified role',async()=>{
+  const h=harness([{data:[event({action:'client.<img src=x onerror=alert(1)>'})]}],['administrator']);
+  await h.api.mount();
+  const html=h.element('auditRows').innerHTML;
+  assert.match(html,/<details><summary>Diagnóstico administrativo/);
+  assert.match(html,/request-test/);
+  assert.match(html,/&lt;img/);
+  assert.doesNotMatch(html,/<details open|<img/);
+  for(const [roles,verified] of [[['superadministrator'],true],[['administrator'],false]]){
+    const regular=harness([{data:[event()]}],roles,verified);
+    await regular.api.mount();
+    assert.doesNotMatch(regular.element('auditRows').innerHTML,/request-test|Diagnóstico administrativo/);
+    assert.equal(regular.element('auditVerify').disabled,true);
+    await regular.element('auditVerify').handlers.click();
+    assert.equal(regular.calls.length,1);
+  }
 });
 
 test('malformed audit data and verification results cannot masquerade as empty or verified',async()=>{

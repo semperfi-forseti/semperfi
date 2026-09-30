@@ -1,6 +1,7 @@
 from app.models.audit import AuditEvent, JobExecution, OutboxEvent
 from app.models.base import Base
 from app.models.billing import BillingCheckout, BillingWebhookReceipt
+from app.models.client_profile import ClientProfile
 from app.models.evidence import Evidence, EvidenceEvent, LegalHold, RetentionPolicy
 from app.models.investigation import (
     ConnectorRun,
@@ -13,6 +14,7 @@ from app.models.investigation import (
     RiskAssessment,
     TimelineEvent,
 )
+from app.models.investigation_engine_run import InvestigationEngineRun
 from app.models.legal import (
     Appointment,
     Client,
@@ -22,6 +24,8 @@ from app.models.legal import (
     LegalProcess,
     ProcessMovement,
 )
+from app.models.legal_document import LegalDocumentLink
+from app.models.organization import OrganizationInvitation, OrganizationSessionVersion
 from app.models.platform import (
     ApprovalRequest,
     AuthenticationChallenge,
@@ -33,6 +37,8 @@ from app.models.platform import (
 from app.models.reporting import AgentRun, Report
 
 __all__ = [
+    "OrganizationInvitation", "OrganizationSessionVersion",
+    "ClientProfile", "InvestigationEngineRun", "LegalDocumentLink",
     "AgentRun", "Appointment", "ApprovalRequest", "AuthenticationChallenge", "AuditEvent", "Base", "Client",
     "ConnectorRun", "Deadline", "Entity", "EntityIdentifier", "EntityRelation", "Evidence",
     "EvidenceEvent", "FinancialEntry", "Finding", "Intimation", "Investigation",

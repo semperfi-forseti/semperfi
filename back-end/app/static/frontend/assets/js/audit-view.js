@@ -10,7 +10,17 @@
     const date = new Date(normalized);
     return Number.isNaN(date.getTime()) ? 'Data não informada' : date.toLocaleString('pt-BR');
   };
-  const resultLabel = value => ({success:'Sucesso',denied:'Negado',error:'Erro',failure:'Falha'}[value] || value);
+  const verifiedRoles = () => typeof backendState!=='undefined' && backendState.bootstrapLoaded===true && typeof SETTINGS!=='undefined' ? String(SETTINGS.userProfile||'').split(',').map(role=>role.trim()) : [];
+  const isAdministrator = () => verifiedRoles().includes('administrator');
+  const canVerify = () => verifiedRoles().some(role=>['administrator','auditor'].includes(role));
+  const resultLabel = value => ({success:'Concluído',denied:'Não autorizado',error:'Erro',failure:'Não concluído'}[value] || 'Resultado não informado');
+  const resourceLabels = {client:'Cliente',process:'Processo',legal_process:'Processo',deadline:'Prazo',appointment:'Compromisso',intimation:'Intimação',financial_entry:'Lançamento financeiro',process_movement:'Andamento processual',investigation:'Investigação',entity:'Alvo de investigação',entity_relation:'Vínculo entre alvos',finding:'Achado da investigação',connector_run:'Consulta a fonte externa',agent_run:'Análise assistida',evidence:'Arquivo e evidência',evidence_event:'Histórico de custódia',report:'Relatório',audit_event:'Histórico de atividades',audit_ledger:'Integridade do histórico',job:'Processamento de consulta',billing_checkout:'Solicitação de pagamento',user:'Usuário',session:'Acesso ao sistema',authentication_challenge:'Confirmação de acesso',tenant:'Organização',membership:'Membro da organização'};
+  const resourceLabel = value => resourceLabels[value] || 'Outro registro';
+  const actionLabel = value => {
+    const action=String(value).split('.').slice(1).join('.');
+    return ({create:'Cadastro',update:'Atualização',delete:'Exclusão',read:'Consulta',list:'Consulta da lista',queue:'Solicitação registrada','run.queue':'Solicitação registrada',download:'Download',approve:'Aprovação',generate:'Geração de documento',upload:'Envio de arquivo',finalize:'Preservação no cofre',verify:'Verificação',attest:'Revisão humana',verify_chain:'Verificação de integridade','events.read':'Consulta do histórico de custódia','legal_hold.request':'Solicitação de retenção especial','legal_hold.confirm':'Confirmação de retenção especial',login:'Entrada no sistema',logout:'Saída do sistema',register:'Cadastro de conta',launch:'Lançamento da intimação',revoke:'Revogação de acesso'}[action] || 'Operação registrada');
+  };
+  const adminDetails = event => isAdministrator()?`<details><summary>Diagnóstico administrativo</summary><dl><dt>Referência do evento</dt><dd style="overflow-wrap:anywhere">${escape(event.id)}</dd><dt>Referência do registro</dt><dd style="overflow-wrap:anywhere">${escape(event.resource_id || 'Não se aplica')}</dd><dt>Referência da solicitação</dt><dd style="overflow-wrap:anywhere">${escape(event.correlation_id)}</dd><dt>Assinatura de integridade</dt><dd style="overflow-wrap:anywhere">${escape(event.event_hash)}</dd><dt>Ação técnica</dt><dd style="overflow-wrap:anywhere">${escape(event.action)}</dd></dl></details>`:'';
 
   async function request(path, method = 'GET') {
     const controller = new AbortController();
@@ -38,7 +48,7 @@
   function render() {
     return `<section id="auditPanel" aria-labelledby="auditTitle">
       <h1 class="page-title" id="auditTitle">Auditoria</h1>
-      <p class="page-subtitle">Eventos persistidos no servidor para sua organização.</p>
+      <p class="page-subtitle">Acompanhe as atividades registradas na sua organização.</p>
       <div class="panel">
         <div class="filter-bar">
           <div class="form-group"><label class="form-label" for="auditLimit">Eventos mais recentes</label><select class="form-select" id="auditLimit"><option value="100">Até 100 eventos</option><option value="250">Até 250 eventos</option><option value="500">Até 500 eventos</option></select></div>
@@ -47,21 +57,22 @@
         <p id="auditLoadStatus" role="status" aria-live="polite" aria-atomic="true">Aguardando consulta ao servidor.</p>
         <p class="text-muted">A leitura e a verificação também geram eventos de auditoria. Os filtros abaixo se aplicam somente aos registros carregados.</p>
         <div id="auditFilters" class="filter-bar mt-20">
-          <div class="form-group"><label class="form-label" for="auditResource">Tipo de recurso</label><select class="form-select" id="auditResource" disabled><option value="">Todos</option></select></div>
+          <div class="form-group"><label class="form-label" for="auditResource">Tipo de registro</label><select class="form-select" id="auditResource" disabled><option value="">Todos</option></select></div>
           <div class="form-group"><label class="form-label" for="auditAction">Ação registrada</label><select class="form-select" id="auditAction" disabled><option value="">Todas</option></select></div>
           <div class="form-group"><label class="form-label" for="auditResult">Resultado</label><select class="form-select" id="auditResult" disabled><option value="">Todos</option></select></div>
-          <div class="form-group grow"><label class="form-label" for="auditSearch">Buscar nos eventos carregados</label><input class="form-input" id="auditSearch" type="search" placeholder="Ação, recurso, ID ou correlação" autocomplete="off" disabled></div>
+          <div class="form-group grow"><label class="form-label" for="auditSearch">Buscar nas atividades carregadas</label><input class="form-input" id="auditSearch" type="search" placeholder="Ação, tipo de registro ou data" autocomplete="off" disabled></div>
           <button class="btn btn-secondary" id="auditClearFilters" type="button" disabled>Limpar filtros</button>
         </div>
         <p id="auditCount" role="status" aria-live="polite" aria-atomic="true"></p>
         <div id="auditRows" aria-busy="false"></div>
       </div>
       <section class="panel mt-20" aria-labelledby="auditIntegrityTitle">
-        <h2 id="auditIntegrityTitle" class="panel-title">Integridade da cadeia de auditoria</h2>
-        <p>Confere a sequência e os hashes dos eventos de auditoria da organização no servidor, independentemente dos filtros e do limite da lista. Não verifica outros logs técnicos, avisos do navegador ou a veracidade das informações registradas.</p>
+        <h2 id="auditIntegrityTitle" class="panel-title">Integridade do histórico</h2>
+        <p>Confira se a sequência completa de atividades permanece íntegra. A verificação inclui registros fora dos filtros desta lista e não confirma a veracidade dos fatos descritos.</p>
         <p class="text-muted">Disponível para administradores e auditores com confirmação de acesso recente.</p>
-        <button class="btn btn-secondary mt-12" id="auditVerify" type="button">Verificar integridade</button>
+        <button class="btn btn-secondary mt-12" id="auditVerify" type="button"${canVerify()?'':' disabled'}>Verificar integridade</button>
         <div id="auditVerifyStatus" role="status" aria-live="polite" aria-atomic="true" class="mt-12">A integridade ainda não foi consultada nesta tela.</div>
+        ${isAdministrator()?'<div id="auditVerifyDiagnostics"></div>':''}
       </section>
     </section>`;
   }
@@ -88,7 +99,7 @@
     function busy() {
       get('auditReload').disabled = state.loading || state.verifying;
       get('auditLimit').disabled = state.loading || state.verifying;
-      get('auditVerify').disabled = state.loading || state.verifying;
+      get('auditVerify').disabled = state.loading || state.verifying || !canVerify();
       get('auditRows').setAttribute('aria-busy', String(state.loading));
       get('auditReload').textContent = state.loading ? 'Consultando…' : 'Atualizar eventos';
       get('auditVerify').textContent = state.verifying ? 'Verificando…' : 'Verificar integridade';
@@ -97,13 +108,13 @@
     function options(id, field, all) {
       const select = get(id), previous = select.value;
       const values = [...new Set(state.events.map(event => event[field]))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
-      select.innerHTML = `<option value="">${all}</option>${values.map(value=>`<option value="${escape(value)}">${escape(field === 'result' ? resultLabel(value) : value)}</option>`).join('')}`;
+      select.innerHTML = `<option value="">${all}</option>${values.map(value=>`<option value="${escape(value)}">${escape(field === 'result' ? resultLabel(value) : field === 'resource_type' ? resourceLabel(value) : actionLabel(value))}</option>`).join('')}`;
       select.value = values.includes(previous) ? previous : '';
     }
     function updateRows() {
       const resource = get('auditResource').value, action = get('auditAction').value, result = get('auditResult').value;
       const query = get('auditSearch').value.trim().toLocaleLowerCase('pt-BR');
-      const rows = state.events.filter(event => (!resource || event.resource_type === resource) && (!action || event.action === action) && (!result || event.result === result) && (!query || [event.id,event.action,event.resource_type,event.resource_id,event.correlation_id,event.event_hash].some(value=>String(value ?? '').toLocaleLowerCase('pt-BR').includes(query))));
+      const rows = state.events.filter(event => (!resource || event.resource_type === resource) && (!action || event.action === action) && (!result || event.result === result) && (!query || [actionLabel(event.action),resourceLabel(event.resource_type),resultLabel(event.result),formatDate(event.occurred_at),...(isAdministrator()?[event.id,event.action,event.resource_type,event.resource_id,event.correlation_id,event.event_hash]:[])].some(value=>String(value ?? '').toLocaleLowerCase('pt-BR').includes(query))));
       get('auditCount').textContent = `${count(rows.length)} de ${count(state.events.length)} eventos carregados exibidos.`;
       const target = get('auditRows');
       if (!rows.length) {
@@ -112,8 +123,8 @@
       }
       target.innerHTML = `<div class="table-scroll" role="region" aria-label="Eventos persistidos de auditoria, tabela com rolagem horizontal" tabindex="0" style="overflow-x:auto;max-width:100%"><table>
         <caption class="sr-only">Eventos de auditoria retornados pelo servidor, do mais recente para o mais antigo</caption>
-        <thead><tr><th scope="col">Data e hora</th><th scope="col">Ação</th><th scope="col">Recurso</th><th scope="col">ID do recurso</th><th scope="col">Resultado</th><th scope="col">Identificação e hash</th></tr></thead>
-        <tbody>${rows.map(event=>`<tr><td><time datetime="${escape(event.occurred_at)}">${escape(formatDate(event.occurred_at))}</time></td><td>${escape(event.action)}</td><td>${escape(event.resource_type)}</td><td style="overflow-wrap:anywhere">${escape(event.resource_id || 'Não se aplica')}</td><td>${escape(resultLabel(event.result))}</td><td><details><summary>Detalhes do evento</summary><dl><dt>ID do evento</dt><dd style="overflow-wrap:anywhere">${escape(event.id)}</dd><dt>ID de correlação</dt><dd style="overflow-wrap:anywhere">${escape(event.correlation_id)}</dd><dt>Hash do evento</dt><dd style="overflow-wrap:anywhere">${escape(event.event_hash)}</dd></dl></details></td></tr>`).join('')}</tbody>
+        <thead><tr><th scope="col">Data e hora</th><th scope="col">Ação</th><th scope="col">Registro</th><th scope="col">Resultado</th>${isAdministrator()?'<th scope="col">Suporte administrativo</th>':''}</tr></thead>
+        <tbody>${rows.map(event=>`<tr><td><time datetime="${escape(event.occurred_at)}">${escape(formatDate(event.occurred_at))}</time></td><td>${escape(actionLabel(event.action))}</td><td>${escape(resourceLabel(event.resource_type))}</td><td>${escape(resultLabel(event.result))}</td>${isAdministrator()?`<td>${adminDetails(event)}</td>`:''}</tr>`).join('')}</tbody>
       </table></div>`;
     }
     async function load() {
@@ -134,17 +145,19 @@
       } finally { state.loading = false; if (panel.isConnected) busy(); }
     }
     async function verify() {
-      if (state.loading || state.verifying) return;
+      if (state.loading || state.verifying || !canVerify()) return;
+      const diagnostics=get('auditVerifyDiagnostics');if(diagnostics)diagnostics.innerHTML='';
       state.verifying = true; busy(); message('auditVerifyStatus','Verificando a cadeia de auditoria da organização no servidor…');
       try {
         const result = await request('/audit-events/verify-chain','POST');
         if (!panel.isConnected) return;
         if (typeof result?.valid !== 'boolean' || !Number.isInteger(result.checked) || result.checked < 0 || (!result.valid && typeof result.broken_event_id !== 'string') || (result.valid && !(result.head_hash == null || typeof result.head_hash === 'string'))) throw new Error('O serviço retornou uma verificação em formato inválido. Tente novamente.');
-        if (!result.valid) message('auditVerifyStatus',`Inconsistência encontrada após verificar ${count(result.checked)} eventos. Primeiro evento com divergência: ${result.broken_event_id}. Solicite a revisão do administrador.`,true);
+        if (!result.valid) message('auditVerifyStatus',`Inconsistência encontrada após verificar ${count(result.checked)} eventos. Solicite a revisão do administrador.`,true);
         else {
-          const text = result.checked ? `Cadeia consistente na verificação do servidor: ${count(result.checked)} eventos conferidos.${result.head_hash ? ` Hash final: ${result.head_hash}.` : ''}` : 'Nenhum evento existia na cadeia no momento da verificação.';
-          message('auditVerifyStatus',`${text} Resultado obtido em ${new Date().toLocaleString('pt-BR')}. Esta consulta não comprova a veracidade do conteúdo nem verifica outros logs.`);
+          const text = result.checked ? `Histórico íntegro na verificação: ${count(result.checked)} eventos conferidos.` : 'Nenhum evento existia na cadeia no momento da verificação.';
+          message('auditVerifyStatus',`${text} Resultado obtido em ${new Date().toLocaleString('pt-BR')}.`);
         }
+        if(isAdministrator()&&diagnostics&&(result.broken_event_id||result.head_hash))diagnostics.innerHTML=`<details><summary>Diagnóstico administrativo</summary><p style="overflow-wrap:anywhere">${result.valid?'Assinatura final':'Referência da divergência'}: ${escape(result.valid?result.head_hash:result.broken_event_id)}</p></details>`;
       } catch (error) { if (panel.isConnected) message('auditVerifyStatus',error.message,true); }
       finally { state.verifying = false; if (panel.isConnected) busy(); }
     }
@@ -156,5 +169,20 @@
     get('auditVerify').addEventListener('click',verify);
     await load();
   }
-  window.SemperfiAudit = Object.freeze({render,mount});
+  async function printReport() {
+    const target=window.open('','_blank');
+    if(!target){window.toast?.('Permita abrir a janela de impressão para gerar o relatório.','warning');return;}
+    target.opener=null;
+    target.document.write('<!doctype html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Auditoria</title></head><body><p role="status">Consultando atividades registradas…</p></body></html>');
+    target.document.close();
+    try {
+      const events=await request('/audit-events?limit=500');
+      if(!Array.isArray(events))throw Error('Não foi possível interpretar o histórico de atividades.');
+      if(target.closed)return;
+      target.document.body.innerHTML=`<h1>SEMPER-FI · Histórico de atividades</h1><p>Emitido em ${escape(new Date().toLocaleString('pt-BR'))}. Últimos ${count(events.length)} registros, limitados a 500. Este relatório não substitui a verificação de integridade da cadeia.</p><table><thead><tr><th>Data</th><th>Registro</th><th>Ação</th><th>Resultado</th></tr></thead><tbody>${events.map(event=>`<tr><td>${escape(formatDate(event.occurred_at))}</td><td>${escape(resourceLabel(event.resource_type))}</td><td>${escape(actionLabel(event.action))}</td><td>${escape(resultLabel(event.result))}</td></tr>`).join('')}</tbody></table>`;
+      const style=target.document.createElement('style');style.textContent='body{font-family:Arial,sans-serif;color:#111;background:#fff;padding:24px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #777;padding:8px;text-align:left}';target.document.head.append(style);
+      target.print();
+    }catch(error){if(!target.closed){target.document.body.textContent=error.message;}window.toast?.(error.message,'error');}
+  }
+  window.SemperfiAudit = Object.freeze({render,mount,printReport});
 })();

@@ -1,7 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from datetime import UTC, datetime
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,7 +10,15 @@ from fastapi.testclient import TestClient
 from app.api.v1 import legal_launch
 from app.db import SessionLocal
 from app.main import app
-from app.models import ProcessMovement
+from app.models import (
+    Appointment,
+    Client,
+    Deadline,
+    FinancialEntry,
+    Intimation,
+    LegalProcess,
+    ProcessMovement,
+)
 
 
 def identity():
@@ -224,7 +233,13 @@ def test_launch_validates_state_and_optional_input_before_writing(api, invalid):
     headers, client_id, process_id, intimation_id = intimation_setup(api)
     body = deepcopy(launch_body())
     if invalid == "deleted_process":
-        assert api.delete(f"/v1/processes/{process_id}", headers=headers).status_code == 204
+        # Simulate a legacy inconsistency: the API now prevents this deletion.
+        async def delete_legacy_parent():
+            async with SessionLocal() as session:
+                process = await session.get(LegalProcess, UUID(process_id))
+                process.deleted_at = datetime.now(UTC)
+                await session.commit()
+        api.portal.call(delete_legacy_parent)
     elif invalid == "invalid_date":
         body["deadline"]["due_date"] = "2026-02-30"
     else:
@@ -352,3 +367,131 @@ def test_authorized_legal_roles_can_mutate_launch_and_import(api, role):
     disposable = create(api, headers, "clients", {"name": "Registro a excluir"})
     assert api.delete(f"/v1/clients/{disposable}", headers=headers).status_code == 204
     assert api.get(f"/v1/clients/{disposable}", headers=headers).status_code == 404
+
+
+@pytest.mark.parametrize("resource", ["appointments", "financial-entries"])
+def test_client_deletion_checks_direct_links_and_preserves_history(api, resource):
+    headers = identity()
+    client_id = create(api, headers, "clients", {"name": "Cliente com vínculo direto"})
+    body = payload(resource, client_id, None)
+    record_id = create(api, headers, resource, body)
+
+    rejected = api.delete(f"/v1/clients/{client_id}", headers=headers)
+    assert rejected.status_code == 409, rejected.text
+    assert api.get(f"/v1/clients/{client_id}", headers=headers).status_code == 200
+    assert api.patch(f"/v1/{resource}/{record_id}", headers=headers, json=body).status_code == 200
+
+    # An explicit removal of the dependent record frees the parent, while both
+    # remain in the database for audit/history rather than being cascade-deleted.
+    assert api.delete(f"/v1/{resource}/{record_id}", headers=headers).status_code == 204
+    assert api.delete(f"/v1/clients/{client_id}", headers=headers).status_code == 204
+
+    async def assert_history():
+        async with SessionLocal() as session:
+            model = Appointment if resource == "appointments" else FinancialEntry
+            record = await session.get(model, UUID(record_id))
+            parent = await session.get(Client, UUID(client_id))
+            assert record.deleted_at is not None and parent.deleted_at is not None
+            assert str(record.client_id) == client_id
+    api.portal.call(assert_history)
+
+
+@pytest.mark.parametrize("resource", ["appointments", "financial-entries"])
+def test_process_reassignment_rejects_incompatible_client_without_breaking_edits(api, resource):
+    headers = identity()
+    client_id, process_id = client_and_process(api, headers)
+    other_client = create(api, headers, "clients", {"name": "Novo cliente do processo"})
+    body = payload(resource, client_id, process_id)
+    record_id = create(api, headers, resource, body)
+    path = f"/v1/processes/{process_id}"
+    reassignment = {"client_id": other_client, "number": "00001-test"}
+
+    rejected = api.patch(path, headers=headers, json=reassignment)
+    assert rejected.status_code == 409, rejected.text
+    assert api.get(path, headers=headers).json()["process"]["client_id"] == client_id
+    assert api.patch(f"/v1/{resource}/{record_id}", headers=headers, json=body).status_code == 200
+    assert api.patch(path, headers=headers, json={**reassignment, "client_id": client_id, "notes": "Revisado"}).status_code == 200
+
+    # Removing only the explicit client link keeps the record attached to the
+    # process and allows a deliberate reassignment without rewriting its history.
+    body["client_id"] = None
+    assert api.patch(f"/v1/{resource}/{record_id}", headers=headers, json=body).status_code == 200
+    assert api.patch(path, headers=headers, json=reassignment).status_code == 200
+    assert api.patch(f"/v1/{resource}/{record_id}", headers=headers, json=body).status_code == 200
+    saved = api.get(f"/v1/{resource}", headers=headers).json()[0]
+    assert saved["client_id"] is None and saved["process_id"] == process_id
+
+
+@pytest.mark.parametrize("resource", ["appointments", "financial-entries"])
+def test_deleted_links_do_not_block_process_reassignment(api, resource):
+    headers = identity()
+    client_id, process_id = client_and_process(api, headers)
+    other_client = create(api, headers, "clients", {"name": "Novo cliente"})
+    record_id = create(api, headers, resource, payload(resource, client_id, process_id))
+    assert api.delete(f"/v1/{resource}/{record_id}", headers=headers).status_code == 204
+    result = api.patch(f"/v1/processes/{process_id}", headers=headers,
+                       json={"client_id": other_client, "number": "00001-test"})
+    assert result.status_code == 200, result.text
+
+
+@pytest.mark.parametrize("resource,model", [
+    ("deadlines", Deadline), ("appointments", Appointment),
+    ("intimations", Intimation), ("financial-entries", FinancialEntry),
+    ("process-movements", ProcessMovement),
+])
+def test_process_delete_protects_each_link_and_keeps_child_editable(api, resource, model):
+    headers = identity()
+    client_id, process_id = client_and_process(api, headers)
+    body = launch_body()["movement"] if resource == "process-movements" else payload(resource, client_id, process_id)
+    create_path = f"processes/{process_id}/movements" if resource == "process-movements" else resource
+    record_id = create(api, headers, create_path, body)
+    process_path = f"/v1/processes/{process_id}"
+    child_path = f"/v1/{resource}/{record_id}"
+
+    rejected = api.delete(process_path, headers=headers)
+    assert rejected.status_code == 409, rejected.text
+    assert api.get(process_path, headers=headers).status_code == 200
+    assert api.patch(child_path, headers=headers, json=body).status_code == 200
+    assert api.delete(child_path, headers=headers).status_code == 204
+    assert api.delete(process_path, headers=headers).status_code == 204
+    assert api.get(process_path, headers=headers).status_code == 404
+
+    async def assert_history():
+        async with SessionLocal() as session:
+            record = await session.get(model, UUID(record_id))
+            assert record.deleted_at is not None and str(record.process_id) == process_id
+    api.portal.call(assert_history)
+
+
+def investigation_payload(client_id, process_id):
+    return {
+        "title": "Investigação vinculada", "category": "test",
+        "objective": "Verificar em ambiente isolado a preservação dos vínculos jurídicos.",
+        "purpose": "Teste de integridade", "legal_basis": "autorizacao",
+        "authorization_reference": "test-only", "proportionality_assessment": "Escopo de teste restrito",
+        "scope_codes": ["proof_digital"], "client_id": client_id, "process_id": process_id,
+    }
+
+
+def test_investigation_protects_process_reassignment_and_parent_removal(api):
+    headers = identity()
+    client_id, process_id = client_and_process(api, headers)
+    other_client = create(api, headers, "clients", {"name": "Outro cliente"})
+    investigation_id = create(api, headers, "investigations", investigation_payload(client_id, process_id))
+    rejected = api.patch(f"/v1/processes/{process_id}", headers=headers,
+                         json={"client_id": other_client, "number": "00001-test"})
+    assert rejected.status_code == 409, rejected.text
+    rejected = api.delete(f"/v1/processes/{process_id}", headers=headers)
+    assert rejected.status_code == 409 and "investigações" in rejected.json()["detail"]
+    assert api.get(f"/v1/investigations/{investigation_id}", headers=headers).status_code == 200
+    assert api.get(f"/v1/processes/{process_id}", headers=headers).json()["process"]["client_id"] == client_id
+
+
+def test_investigation_direct_client_link_prevents_client_removal(api):
+    headers = identity()
+    client_id = create(api, headers, "clients", {"name": "Cliente com investigação"})
+    investigation_id = create(api, headers, "investigations", investigation_payload(client_id, None))
+    rejected = api.delete(f"/v1/clients/{client_id}", headers=headers)
+    assert rejected.status_code == 409 and "investigações" in rejected.json()["detail"]
+    assert api.get(f"/v1/clients/{client_id}", headers=headers).status_code == 200
+    assert api.get(f"/v1/investigations/{investigation_id}", headers=headers).status_code == 200

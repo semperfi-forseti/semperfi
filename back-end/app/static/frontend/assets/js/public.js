@@ -74,8 +74,8 @@
     plans.querySelectorAll('[data-plan-card]').forEach(item => item.classList.toggle('public-plan-selected', item.dataset.planCard === plan.key));
     document.getElementById('publicPlanHeading').textContent = `${plan.name} · ${plan.price === null ? 'Sob proposta' : `${formatMoney.format(plan.price)}/mês`}`;
     document.getElementById('publicPlanDescription').textContent = plan.price === null
-      ? 'Capacidade e condições personalizadas para sua organização. O canal para solicitar uma proposta ainda não está disponível.'
-      : `Este plano prevê ${plan.seats} ${plan.seats === 1 ? 'usuário' : 'usuários'} e ${new Intl.NumberFormat('pt-BR').format(plan.storedProcesses)} processos armazenados. A contratação ainda não está disponível.`;
+      ? 'Capacidade e condições personalizadas para sua organização. A contratação real ainda não está disponível.'
+      : `Este plano prevê ${plan.seats} ${plan.seats === 1 ? 'usuário' : 'usuários'} e ${new Intl.NumberFormat('pt-BR').format(plan.storedProcesses)} processos armazenados. A contratação real ainda não está disponível.`;
     summary.hidden = false;
     focusSection(summary);
   });

@@ -86,24 +86,8 @@
 
   function renderOverview() {
     return `<div class="commercial-grid">
-      ${overviewCard('Assinatura', 'Nenhum plano configurado', 'Compare as franquias mensais para diferentes estruturas de trabalho.', 'Ver planos', 'plans')}
-      ${overviewCard('Capacidade', 'Adicionais mensais', 'Consulte ampliações de processos, evidências e usuários.', 'Consultar adicionais', 'addons')}
-      ${overviewCard('Créditos Forseti', 'Carteira indisponível', 'Consulte os pacotes avulsos e os valores das operações no catálogo.', 'Ver pacotes de créditos', 'credits')}
-      ${overviewCard('Diligências externas', 'Carteira indisponível', 'Consulte recargas em reais para cartórios, certidões e outros serviços externos.', 'Ver opções de recarga', 'recharges')}
-    </div>
-    <div class="commercial-grid">
-      <section class="commercial-card"><h2>Histórico de consumo</h2><p class="commercial-muted">Nenhum consumo comercial registrado.</p></section>
-      <section class="commercial-card"><h2>Histórico de cobranças</h2><p class="commercial-muted">Nenhuma cobrança registrada.</p></section>
-    </div>
-    <details class="commercial-card"><summary class="commercial-summary">Catálogo de operações · ${count(catalog.creditOperations.length)} operações</summary>
-      <p class="commercial-note">Valores de referência em créditos. Esta tabela não executa operações nem registra consumo.</p>
-      <div class="commercial-table-wrap" tabindex="0" role="region" aria-label="Catálogo de operações em créditos">
-        <table><caption class="commercial-sr-only">Operações e créditos por execução no catálogo</caption><thead><tr><th scope="col">Operação</th><th scope="col">Créditos</th></tr></thead><tbody>
-          ${catalog.creditOperations.map(operation => `<tr><th scope="row">${escape(operation.label)}</th><td>${count(operation.credits)}</td></tr>`).join('')}
-        </tbody></table>
-      </div>
-      <p class="commercial-note">Diligências externas utilizam valores em reais, separados dos créditos. Taxa de referência: ${count(catalog.diligenceFee.rate * 100)}% do custo externo ou ${money(catalog.diligenceFee.minimum)}, o maior valor.</p>
-    </details>`;
+      ${overviewCard('Planos da plataforma', 'Compare as op??es', 'Consulte mensalidades, usu?rios e capacidade de cada plano.', 'Comparar planos', 'plans')}
+    </div>`;
   }
 
   function render() {
@@ -126,9 +110,6 @@
         if (action === 'retry') { mount(); return; }
         if (!catalog) return;
         if (action === 'plans') openPlans();
-        if (action === 'addons') openAddons();
-        if (action === 'credits') openPackages('credits');
-        if (action === 'recharges') openPackages('recharges');
       });
     }
     if (catalog) return;
@@ -180,11 +161,11 @@
   }
 
   function openPlans() {
-    dialog('Comparar planos', `<p class="commercial-note">Mensalidades e franquias do catálogo. Selecione um plano para consultar o resumo.</p>
+    dialog('Comparar planos', `<p class="commercial-note">Mensalidades e franquias do catálogo. Abra os detalhes para conhecer cada plano.</p>
       <div class="commercial-plans">${catalog.plans.map(plan => `<article class="commercial-plan ${plan.featured ? 'commercial-plan-featured' : ''}">
         ${plan.featured ? '<span class="commercial-badge">Em destaque</span>' : ''}<h3>${escape(plan.name)}</h3>
         <p class="commercial-price">${plan.price === null ? 'Sob proposta' : money(plan.price)}${plan.price === null ? '' : '<span class="commercial-price-unit">/mês</span>'}</p>
-        ${planFeatures(plan)}<div class="commercial-actions">${button(plan.price === null ? 'Consultar proposta' : 'Selecionar', 'select-plan', true, `data-commercial-key="${escape(plan.key)}" aria-label="${escape(plan.price === null ? 'Consultar proposta Corporate' : `Selecionar plano ${plan.name}`)}"`)}</div>
+        ${planFeatures(plan)}<div class="commercial-actions">${button('Ver detalhes', 'select-plan', true, `data-commercial-key="${escape(plan.key)}" aria-label="${escape(`Ver detalhes do plano ${plan.name}`)}"`)}</div>
       </article>`).join('')}</div>`, '', (action, trigger) => {
         if (action !== 'select-plan') return;
         const plan = catalog.plans.find(item => item.key === trigger.dataset.commercialKey);
@@ -194,80 +175,9 @@
 
   function openPlanSummary(plan) {
     const custom = plan.price === null;
-    dialog(custom ? 'Proposta Corporate' : `Resumo · ${plan.name}`, `<section class="commercial-selection"><h3>${escape(plan.name)}</h3><p class="commercial-price">${custom ? 'Sob proposta' : `${money(plan.price)}<span class="commercial-price-unit">/mês</span>`}</p>${planFeatures(plan)}</section>
-      ${custom ? '<p class="commercial-note">O plano Corporate prevê uma proposta com capacidade e condições personalizadas. O canal comercial ainda não está disponível para solicitar essa proposta.</p>' : notice}
-      <p class="commercial-status" role="status">${custom ? 'Nenhuma proposta solicitada.' : 'Contratação indisponível. Nenhum plano foi ativado.'}</p>`, button('Voltar aos planos', 'back'), action => { if (action === 'back') openPlans(); });
-  }
-
-  function normalizeQuantity(input) {
-    const raw = Number(input.value);
-    const quantity = Number.isFinite(raw) ? Math.min(100, Math.max(0, Math.trunc(raw))) : 0;
-    if (input.value !== '') input.value = String(quantity);
-    return quantity;
-  }
-
-  function openAddons(previous = {}) {
-    const quantities = {...previous};
-    const subtotal = addon => Math.round(addon.price * 100) * (quantities[addon.key] || 0);
-    const total = () => catalog.addons.reduce((sum, addon) => sum + subtotal(addon), 0) / 100;
-    dialog('Expandir capacidade', `<p class="commercial-note">Adicionais recorrentes mensais. Ajuste a quantidade de cada item, entre 0 e 100, para consultar o total.</p>
-      <div class="commercial-table-wrap" tabindex="0" role="region" aria-label="Adicionais de capacidade e quantidades"><table><caption class="commercial-sr-only">Adicionais com valor unitário mensal, quantidade e subtotal</caption><thead><tr><th scope="col">Adicional</th><th scope="col">Unitário/mês</th><th scope="col">Quantidade</th><th scope="col">Subtotal/mês</th></tr></thead><tbody>
-        ${catalog.addons.map(addon => `<tr><th scope="row">${escape(addon.name)}</th><td>${money(addon.price)}</td><td><label class="commercial-sr-only" for="commercial-qty-${addon.key}">Quantidade: ${escape(addon.name)}</label><input class="commercial-quantity" id="commercial-qty-${addon.key}" type="number" inputmode="numeric" min="0" max="100" step="1" value="${quantities[addon.key] || 0}" data-commercial-addon="${addon.key}"></td><td data-commercial-subtotal="${addon.key}">${money(subtotal(addon) / 100)}</td></tr>`).join('')}
-      </tbody></table></div>
-      <p class="commercial-total" role="status" aria-live="polite" aria-atomic="true">Total mensal adicional: <strong data-commercial-total>${money(total())}</strong></p>
-      <p class="commercial-status" data-commercial-validation role="status"></p>${notice}`, button('Revisar seleção', 'review', true), (action, _, root) => {
-        if (action !== 'review') return;
-        const selected = catalog.addons.filter(addon => quantities[addon.key] > 0);
-        if (!selected.length) {
-          root.querySelector('[data-commercial-validation]').textContent = 'Informe a quantidade de pelo menos um adicional.';
-          root.querySelector('.commercial-quantity')?.focus();
-          return;
-        }
-        openAddonSummary(selected, quantities, total());
-      }, (event, root) => {
-        const input = event.target.closest('[data-commercial-addon]');
-        if (!input) return;
-        const addon = catalog.addons.find(item => item.key === input.dataset.commercialAddon);
-        if (!addon) return;
-        quantities[addon.key] = normalizeQuantity(input);
-        root.querySelector(`[data-commercial-subtotal="${addon.key}"]`).textContent = money(subtotal(addon) / 100);
-        root.querySelector('[data-commercial-total]').textContent = money(total());
-        root.querySelector('[data-commercial-validation]').textContent = '';
-      });
-  }
-
-  function openAddonSummary(selected, quantities, total) {
-    dialog('Resumo dos adicionais', `<ul class="commercial-features">${selected.map(addon => `<li>${escape(addon.name)} × ${count(quantities[addon.key])} — ${money(Math.round(addon.price * 100) * quantities[addon.key] / 100)}/mês</li>`).join('')}</ul>
-      <p class="commercial-total">Total mensal adicional: <strong>${money(total)}</strong></p>${notice}<p class="commercial-status" role="status">Nenhum adicional foi contratado.</p>`, button('Voltar aos adicionais', 'back'), action => { if (action === 'back') openAddons(quantities); });
-  }
-
-  function openPackages(kind, initialKey = '') {
-    const credits = kind === 'credits';
-    const items = credits ? catalog.creditPackages : catalog.diligenceRecharges;
-    let selectedKey = initialKey;
-    const title = credits ? 'Pacotes de Créditos Forseti' : 'Opções de recarga de diligências';
-    const label = item => credits ? `${count(item.credits)} créditos` : item.name;
-    const price = item => credits ? item.price : item.amount;
-    const selected = () => items.find(item => item.key === selectedKey);
-    const selectionText = () => selected() ? `Selecionado: ${label(selected())} · ${money(price(selected()))}` : 'Nenhuma opção selecionada.';
-    dialog(title, `<p class="commercial-note">${credits ? 'Pacotes avulsos do catálogo. Os créditos comprados são previstos para uso após os créditos incluídos do mês.' : `Valores do catálogo para serviços externos, como cartórios, certidões e protestos. Taxa por diligência: ${count(catalog.diligenceFee.rate * 100)}% do custo externo ou ${money(catalog.diligenceFee.minimum)}, o maior valor.`}</p>
-      <fieldset class="commercial-fieldset"><legend class="commercial-legend">${credits ? 'Selecione um pacote' : 'Selecione uma opção de recarga'}</legend><div class="commercial-grid">
-        ${items.map(item => `<label class="commercial-pack ${item.key === selectedKey ? 'commercial-pack-selected' : ''}"><input type="radio" name="commercial-package" value="${item.key}" ${item.key === selectedKey ? 'checked' : ''}><span>${escape(label(item))}</span><strong class="commercial-price">${money(price(item))}</strong>${credits ? `<span class="commercial-muted">${money(item.unit)} por crédito</span>` : ''}</label>`).join('')}
-      </div></fieldset><p class="commercial-total" data-commercial-selection role="status" aria-live="polite" aria-atomic="true">${escape(selectionText())}</p>${notice}`, button('Revisar seleção', 'review', true), (action, _, root) => {
-        if (action !== 'review') return;
-        const item = selected();
-        if (!item) {
-          root.querySelector('[data-commercial-selection]').textContent = credits ? 'Selecione um pacote para revisar.' : 'Selecione uma opção de recarga para revisar.';
-          root.querySelector('input[type="radio"]')?.focus();
-          return;
-        }
-        dialog('Resumo da seleção', `<section class="commercial-selection"><h3>${escape(label(item))}</h3><p class="commercial-price">${money(price(item))}</p>${credits ? `<p>${money(item.unit)} por crédito</p>` : '<p>Valor de recarga para diligências externas.</p>'}</section>${notice}<p class="commercial-status" role="status">Nenhum pagamento registrado. ${credits ? 'Nenhum crédito adicionado.' : 'Nenhum saldo adicionado.'}</p>`, button('Voltar às opções', 'back'), next => { if (next === 'back') openPackages(kind, selectedKey); });
-      }, (event, root) => {
-        if (!event.target.matches('input[type="radio"][name="commercial-package"]')) return;
-        selectedKey = event.target.value;
-        root.querySelectorAll('.commercial-pack').forEach(pack => pack.classList.toggle('commercial-pack-selected', pack.querySelector('input').checked));
-        root.querySelector('[data-commercial-selection]').textContent = selectionText();
-      });
+    dialog(custom ? 'Plano Corporate' : `Resumo · ${plan.name}`, `<section class="commercial-selection"><h3>${escape(plan.name)}</h3><p class="commercial-price">${custom ? 'Sob proposta' : `${money(plan.price)}<span class="commercial-price-unit">/mês</span>`}</p>${planFeatures(plan)}</section>
+      ${custom ? '<p class="commercial-note">Capacidade e condições personalizadas para sua organização. A contratação real ainda não está disponível.</p>' : notice}`,
+      button('Voltar aos planos', 'back'), action => { if (action === 'back') openPlans(); });
   }
 
   window.SemperfiCommercial = Object.freeze({render, mount, loadCatalog, planFeatures});

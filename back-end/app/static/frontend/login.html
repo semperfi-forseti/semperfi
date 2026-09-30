@@ -57,6 +57,10 @@
           <p id="verificationDestination" class="access-help"></p>
           <form id="verificationForm" class="access-form" method="post" action="/v1/auth/verify">
             <div class="form-group"><label for="verificationCode">Código de 6 dígitos</label><input class="form-input verification-code" id="verificationCode" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" aria-describedby="verificationHelp" placeholder="000000" required><p id="verificationHelp" class="field-help"></p></div>
+            <div id="resetPasswordFields" hidden>
+              <div class="form-group"><label for="resetPassword">Nova senha</label><div class="password-field"><input class="form-input" id="resetPassword" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" aria-describedby="resetPasswordHelp" disabled><button class="password-toggle" type="button" data-password="resetPassword" aria-label="Mostrar nova senha" aria-pressed="false">Mostrar</button></div><p id="resetPasswordHelp" class="field-help">Use uma frase exclusiva de 12 a 128 caracteres. Suas sessões anteriores serão encerradas.</p></div>
+              <div class="form-group"><label for="resetConfirmation">Confirme a nova senha</label><div class="password-field"><input class="form-input" id="resetConfirmation" type="password" autocomplete="new-password" minlength="12" maxlength="128" disabled><button class="password-toggle" type="button" data-password="resetConfirmation" aria-label="Mostrar confirmação da nova senha" aria-pressed="false">Mostrar</button></div></div>
+            </div>
             <button id="verifyAccount" class="btn btn-primary access-button" type="submit">Confirmar e continuar <span aria-hidden="true">→</span></button>
           </form>
           <div class="verification-actions"><button id="resendCode" class="btn btn-secondary" type="button">Reenviar código</button><button id="cancelVerification" class="verification-back" type="button">Usar outros dados</button></div>
@@ -68,6 +72,7 @@
             <div class="form-group"><label for="loginEmail">E-mail</label><input class="form-input" id="loginEmail" name="email" type="email" autocomplete="username" inputmode="email" maxlength="320" placeholder="Seu e-mail de acesso" required></div>
             <div class="form-group"><label for="loginPassword">Senha</label><div class="password-field"><input class="form-input" id="loginPassword" name="password" type="password" autocomplete="current-password" maxlength="128" placeholder="Sua senha" required><button class="password-toggle" type="button" data-password="loginPassword" aria-label="Mostrar senha" aria-pressed="false">Mostrar</button></div></div>
             <button id="passwordLogin" class="btn btn-primary access-button" type="submit" disabled>Entrar na minha conta <span aria-hidden="true">→</span></button>
+            <button id="forgotPassword" class="verification-back" type="button" disabled>Esqueci minha senha</button>
             <p class="access-help">Após validar sua senha, enviaremos um código para confirmar o acesso. Para pessoa jurídica, use o e-mail da sua conta vinculada ao escritório.</p>
           </form>
           <div id="oidcAccess" hidden><div class="access-divider"><span>ou</span></div><button id="institutionalLogin" class="btn btn-secondary access-button" type="button" disabled>Entrar com conta institucional <span aria-hidden="true">↗</span></button><p class="access-help">Use o provedor de acesso da sua organização.</p></div>
@@ -86,8 +91,15 @@
             <p class="access-help">Cada cadastro cria um espaço separado. Para participar de um escritório existente, solicite o vínculo ao administrador.</p>
           </form>
         </div>
+        <section id="recoveryPanel" aria-label="Recuperação de senha" hidden>
+          <form id="recoveryForm" class="access-form" method="post" action="/v1/auth/password/forgot">
+            <div class="form-group"><label for="recoveryEmail">E-mail da sua conta</label><input class="form-input" id="recoveryEmail" name="email" type="email" autocomplete="username" inputmode="email" maxlength="320" required aria-describedby="recoveryHelp"><p id="recoveryHelp" class="field-help">Para pessoa física ou jurídica, use o e-mail pessoal de acesso. Se houver uma conta elegível, enviaremos um código para redefinir a senha.</p></div>
+            <button id="requestRecovery" class="btn btn-primary access-button" type="submit" disabled>Solicitar código de recuperação</button>
+            <button id="cancelRecovery" class="verification-back" type="button">Voltar para entrar</button>
+          </form>
+        </section>
         <button id="authRetry" class="btn btn-secondary access-button" type="button" hidden>Tentar novamente</button>
-        <details class="access-support" id="access-help"><summary>Precisa de ajuda para acessar?</summary><p>Confira o e-mail usado no cadastro. Se sua organização usa acesso institucional, entre pelo provedor. Para recuperar o acesso ou vincular-se a uma organização existente, procure o administrador.</p></details>
+        <details class="access-support" id="access-help"><summary>Precisa de ajuda para acessar?</summary><p>Confira o e-mail usado no cadastro. Use “Esqueci minha senha” para receber um código de recuperação. Se sua organização usa acesso institucional, recupere a senha pelo provedor. Para vincular-se a uma organização existente ou recuperar uma conta sem acesso ao e-mail, procure o administrador.</p></details>
         <details id="developmentAccess" class="development-access" hidden><summary>Acesso técnico de desenvolvimento</summary><p>Disponível somente quando habilitado pelo servidor. Não substitui uma conta de usuário.</p><button id="developmentLogin" class="btn btn-secondary access-button" type="button" disabled>Entrar no ambiente local <span aria-hidden="true">→</span></button></details>
       </div>
     </section>

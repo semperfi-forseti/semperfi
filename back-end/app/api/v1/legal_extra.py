@@ -35,7 +35,9 @@ async def _cid(session: AsyncSession, principal: Principal, request: Request, ac
 
 
 async def _row(session: AsyncSession, model, tenant_id: uuid.UUID, item_id: uuid.UUID):
-    item = await session.scalar(select(model).where(model.id == item_id, model.tenant_id == tenant_id, model.deleted_at.is_(None)))
+    # Mutation routes lock the child before validating parents, matching the
+    # intimation launch transaction and preventing edits racing its launch.
+    item = await session.scalar(select(model).where(model.id == item_id, model.tenant_id == tenant_id, model.deleted_at.is_(None)).with_for_update())
     if not item: raise HTTPException(status_code=404, detail="Registro não encontrado.")
     return item
 

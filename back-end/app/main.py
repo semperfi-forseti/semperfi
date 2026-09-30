@@ -15,12 +15,15 @@ from app.api.v1 import (
     audit,
     auth_routes,
     billing,
+    client_profiles,
     engines,
     evidence,
     frontend,
     investigations,
     legal,
+    legal_documents,
     legal_extra,
+    organization,
     reports,
 )
 from app.core.config import get_settings
@@ -50,7 +53,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["Content-Type", "X-Correlation-Id", "X-CSRF-Token"] + (["X-Semperfi-User-Id", "X-Semperfi-Tenant-Id", "X-Semperfi-Roles"] if settings.environment in {"development", "test"} else []),
 )
 
@@ -91,7 +94,9 @@ async def validation_error(request: Request, exc: RequestValidationError):
     if request.url.path == f"{settings.api_v1_prefix}/auth/verify":
         return JSONResponse(status_code=422, content={"detail": "Informe o código de seis dígitos enviado por e-mail."},
                             headers={"Cache-Control": "no-store"})
-    if request.url.path in {f"{settings.api_v1_prefix}/auth/login", f"{settings.api_v1_prefix}/auth/register"}:
+    # All authentication forms can carry credentials or verification codes,
+    # including recovery and future account flows. Never echo rejected inputs.
+    if request.url.path.startswith(f"{settings.api_v1_prefix}/auth/"):
         errors = [{"loc": error["loc"], "msg": error["msg"], "type": error["type"]}
                   for error in exc.errors()]
         return JSONResponse(status_code=422, content={"detail": errors},
@@ -126,5 +131,5 @@ async def root():
     return JSONResponse(status_code=404, content={"detail": "Frontend não encontrado. Execute npm run sync:backend no frontend."})
 
 
-for router in (auth_routes.router, legal.router, legal_extra.router, investigations.router, engines.router, evidence.router, reports.router, audit.router, frontend.router, billing.router):
+for router in (auth_routes.router, legal.router, legal_extra.router, client_profiles.router, legal_documents.router, investigations.router, engines.router, evidence.router, reports.router, audit.router, frontend.router, billing.router, organization.router):
     app.include_router(router, prefix=settings.api_v1_prefix)

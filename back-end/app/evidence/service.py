@@ -33,29 +33,74 @@ class EvidenceService:
         self.settings = get_settings()
 
     async def stage_upload(self, file: UploadFile) -> StagedEvidence:
+        safe_name = (file.filename or "upload.bin").replace("\\", "/").rsplit("/", 1)[-1]
+        reserved_names = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
+            f"{prefix}{number}" for prefix in ("COM", "LPT") for number in "123456789¹²³"
+        }
+        if (
+            safe_name in {"", ".", ".."} or safe_name.endswith((".", " "))
+            or safe_name.split(".", 1)[0].upper() in reserved_names
+            or any(char in '<>:"|?*' or ord(char) < 32 or ord(char) == 127 for char in safe_name)
+        ):
+            raise ValueError("Nome de arquivo inválido.")
         upload_id = str(uuid.uuid4())
         folder = self.settings.evidence_staging_dir / upload_id
         folder.mkdir(parents=True, exist_ok=False)
-        safe_name = Path(file.filename or "upload.bin").name
         path = folder / safe_name
         digest = hashlib.sha256()
         written = 0
-        with path.open("wb") as target:
-            while chunk := await file.read(1024 * 1024):
-                written += len(chunk)
-                if written > self.settings.max_upload_bytes:
-                    target.close()
-                    path.unlink(missing_ok=True)
-                    raise ValueError("Arquivo excede o limite permitido.")
-                digest.update(chunk)
-                target.write(chunk)
-        detected_mime = self._detect_mime(path, file.content_type)
-        if detected_mime not in self.settings.allowed_mime_types:
-            path.unlink(missing_ok=True)
-            raise ValueError("Tipo MIME não permitido.")
-        self._scan(path)
-        metadata = self._extract_metadata(path, detected_mime)
+        try:
+            with path.open("wb") as target:
+                while chunk := await file.read(1024 * 1024):
+                    written += len(chunk)
+                    if written > self.settings.max_upload_bytes:
+                        raise ValueError("Arquivo excede o limite permitido.")
+                    digest.update(chunk)
+                    target.write(chunk)
+            detected_mime = self._detect_mime(path, file.content_type)
+            detected_mime = self._validate_text_upload(path, file.content_type, detected_mime)
+            if detected_mime not in self.settings.allowed_mime_types:
+                raise ValueError("Tipo MIME não permitido.")
+            self._scan(path)
+            metadata = self._extract_metadata(path, detected_mime)
+        except Exception:
+            # This directory was just created beneath staging with a server UUID.
+            # Rejected files must not survive a validation or antivirus failure.
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
         return StagedEvidence(upload_id, path, safe_name, detected_mime, written, digest.hexdigest(), metadata)
+
+    def _validate_text_upload(self, path: Path, declared: str | None, detected: str) -> str:
+        text_types = {"text/plain", "application/json"}
+        generic_types = {"", "application/octet-stream"}
+        declared = (declared or "").split(";", 1)[0].strip().lower()
+        extension = path.suffix.lower()
+        if extension not in {".txt", ".json"} and declared not in text_types and detected not in text_types:
+            return detected
+        if extension not in {"", ".txt", ".json"} or declared not in text_types | generic_types:
+            raise ValueError("Extensão e tipo MIME incompatíveis com evidência textual.")
+        if detected not in text_types | generic_types and not detected.startswith("text/"):
+            raise ValueError("O conteúdo detectado não é textual.")
+        try:
+            raw = path.read_bytes()
+            # Accept a UTF-8 BOM without changing the original bytes or its hash.
+            content = raw.decode("utf-8-sig", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise ValueError("Evidência textual deve conter UTF-8 válido.") from exc
+        if content.startswith(("%PDF-", "GIF87a", "GIF89a")) or any(
+            (ord(char) < 32 and char not in "\t\r\n") or 127 <= ord(char) <= 159
+            for char in content
+        ):
+            raise ValueError("Conteúdo binário incompatível com evidência textual.")
+        if extension == ".json" or declared == "application/json" or detected == "application/json":
+            def reject_constant(value: str):
+                raise ValueError("Constante não permitida em JSON.")
+            try:
+                json.loads(content, parse_constant=reject_constant)
+            except (ValueError, RecursionError) as exc:
+                raise ValueError("Evidência JSON inválida.") from exc
+            return "application/json"
+        return "text/plain"
 
     def _detect_mime(self, path: Path, declared: str | None) -> str:
         try:
@@ -63,6 +108,7 @@ class EvidenceService:
             detected = result.stdout.strip()
         except (FileNotFoundError, subprocess.SubprocessError):
             detected = mimetypes.guess_type(str(path))[0] or declared or "application/octet-stream"
+        detected = detected.split(";", 1)[0].strip().lower()
         aliases = {"image/jpg": "image/jpeg", "application/x-empty": "application/octet-stream"}
         return aliases.get(detected, detected)
 
@@ -107,7 +153,8 @@ class EvidenceService:
             content = source.read()
         kwargs = {
             "Bucket": self.settings.s3_bucket_evidence, "Key": key, "Body": content,
-            "ContentType": staged.detected_mime, "Metadata": {"sha256": staged.sha256, "source": "semperfi"},
+            "ContentType": staged.detected_mime, "ContentDisposition": "attachment",
+            "Metadata": {"sha256": staged.sha256, "source": "semperfi"},
         }
         if self.settings.s3_kms_key_id:
             kwargs.update({"ServerSideEncryption": "aws:kms", "SSEKMSKeyId": self.settings.s3_kms_key_id})
@@ -117,7 +164,7 @@ class EvidenceService:
         return {"bucket": self.settings.s3_bucket_evidence, "key": key, "version_id": response.get("VersionId"), "etag": response.get("ETag", "").strip('"'), "retain_until": retain_until}
 
     def presigned_download(self, bucket: str, key: str, version_id: str | None) -> str:
-        params = {"Bucket": bucket, "Key": key}
+        params = {"Bucket": bucket, "Key": key, "ResponseContentDisposition": "attachment"}
         if version_id:
             params["VersionId"] = version_id
         return self._client().generate_presigned_url("get_object", Params=params, ExpiresIn=self.settings.s3_presign_expires_seconds)
