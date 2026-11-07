@@ -149,9 +149,113 @@ let child, browser;
   const originals=await page.request.get(origin+'/v1/evidences');assert.ok((await originals.json()).some(row=>row.id===evidenceId));
   await page.evaluate(()=>closeModal());
 
-  const investigationResponse=await page.request.post(origin+'/v1/investigations',{data:{title:'Investigação do teste',category:'test',objective:'Validar planejamento e revisão com persistência no banco isolado do navegador.',purpose:'Teste isolado de planejamento',legal_basis:'contrato',authorization_reference:'TESTE',proportionality_assessment:'Limitado aos dados do teste',scope_codes:['empresarial'],risk_level:'low'}});
+  // Exercise every wizard step instead of bypassing the browser form. Values
+  // must survive a fresh bootstrap; the browser cache is only a projection.
+  await page.evaluate(()=>openInvestigationWizard());
+  await fill({wz_title:'Investigação do teste',wz_owner:'Responsável declarado do teste',wz_deadline:'2026-10-16'});
+  await select('wz_category','societaria');await select('wz_priority','alta');
+  await select('wz_clientId',client.id);await select('wz_processId',legalCase.id);
+  await page.locator('#modal').getByRole('button',{name:'Avançar →',exact:true}).click();
+  await fill({wz_objective:'Validar planejamento e revisão com persistência no banco isolado do navegador.',wz_hypothesis:'Hipótese pendente de verificação do teste.',wz_questions:'Qual registro foi consultado?\nA coleta está vinculada ao achado?',wz_expected:'Relatório revisável com diligências e créditos 💳'});
+  await page.locator('#modal').getByRole('button',{name:'Avançar →',exact:true}).click();
+  await fill({wz_purpose:'Teste isolado de planejamento',wz_authRef:'TESTE-ISOLADO',wz_liaText:'Limitado aos dados do teste isolado',wz_retention:'2'});
+  await select('wz_legalBasis','legitimo_interesse');await select('wz_riskLevel','baixo');
+  await page.locator('.wz_scope[value=empresarial]').check();
+  await page.locator('#modal').getByRole('button',{name:'Avançar →',exact:true}).click();
+  await page.locator('#wz_declaration').check();
+  const investigationSaved=page.waitForResponse(response=>new URL(response.url()).pathname==='/v1/investigations'&&response.request().method()==='POST');
+  await page.locator('#modal').getByRole('button',{name:'Criar investigação',exact:true}).click();
+  const investigationResponse=await investigationSaved;
   assert.equal(investigationResponse.status(),201,await investigationResponse.text());
   const investigation=(await investigationResponse.json()).id;
+  await page.locator('#modal .tab').filter({hasText:'Visão Geral'}).waitFor();
+  await page.reload();await page.locator('body:not(.auth-pending) .page-title').waitFor();
+  const investigationRecord=(await bootstrap()).investigations.find(row=>row.id===investigation);
+  assert.equal(investigationRecord.owner,'Responsável declarado do teste');assert.equal(investigationRecord.priority,'alta');
+  assert.equal(investigationRecord.deadline,'2026-10-16');assert.equal(investigationRecord.expected,'Relatório revisável com diligências e créditos 💳');
+  assert.deepEqual(investigationRecord.questions,['Qual registro foi consultado?','A coleta está vinculada ao achado?']);
+  assert.equal(investigationRecord.clientId,client.id);assert.equal(investigationRecord.processId,legalCase.id);
+  await page.evaluate(id=>{openInvestigationWorkspace(id);switchOsintTab('entidades');},investigation);
+  await page.locator('#modal').getByRole('button',{name:'+ Adicionar entidade',exact:true}).click();
+  await select('ent_type','pessoa_juridica');
+  await fill({ent_name:'Entidade do teste isolado',ent_aliases:'Nome anterior, Razão alternativa',ent_notes:'Identidade declarada no teste, sem consulta externa.'});
+  const entitySaved=page.waitForResponse(response=>new URL(response.url()).pathname===`/v1/investigations/${investigation}/entities`&&response.request().method()==='POST');
+  await page.locator('#modal .modal-footer').getByRole('button',{name:'Salvar',exact:true}).click();
+  const entityResponse=await entitySaved;assert.equal(entityResponse.status(),201,await entityResponse.text());
+  const entity=(await entityResponse.json()).id;
+  await page.locator('#modal').getByText('Entidade do teste isolado',{exact:true}).waitFor();
+  await page.reload();await page.locator('body:not(.auth-pending) .page-title').waitFor();
+  assert.deepEqual((await bootstrap()).osintEntities.find(row=>row.id===entity).aliases,['Nome anterior','Razão alternativa']);
+  console.log('PASS Investigation wizard fields and entity aliases saved by real forms and retained after reload');
+
+  // Only the completed provider response is a fixture. The history, finding
+  // association, review, report and reload below all use real HTTP and SQLite.
+  // No provider is queried and no queue is published in this isolated suite.
+  const connectorSeedPath=path.join(directory,'seed_connector.py');
+  const snapshot={tool:'phone',target:'+5511999999999',data:{normalized:'+5511999999999',valid_format:true,ddd:'11',ddd_data:{state:'SP',cities:['Cidade do teste isolado']},line_confirmed:null,limitation:'Não confirma titularidade; registro do teste isolado.'},partial:false,limitations:['Fixture isolada; nenhuma consulta externa executada.']};
+  await fs.writeFile(connectorSeedPath,`import asyncio, hashlib, json, sys\nfrom uuid import UUID\nfrom app.db import SessionLocal\nfrom app.models import ConnectorRun\nasync def main():\n    snapshot=json.loads(sys.argv[4])\n    async with SessionLocal() as session:\n        item=ConnectorRun(tenant_id=UUID(sys.argv[1]),investigation_id=UUID(sys.argv[2]),target_entity_id=UUID(sys.argv[3]),connector_id='osint_tools',status='completed',purpose='Coleta isolada para verificar vínculo persistido',correlation_id='browser-isolated-connector',request_hash='b'*64,request_payload={'tool':'phone','value':snapshot['target'],'authorized':True},response_hash=hashlib.sha256(json.dumps(snapshot,sort_keys=True).encode()).hexdigest(),raw_snapshot=snapshot,normalized_result=snapshot,limitations=snapshot['limitations'])\n        session.add(item)\n        await session.flush()\n        item_id=str(item.id)\n        await session.commit()\n        print(item_id)\nasyncio.run(main())\n`,'utf8');
+  const runId=await new Promise((resolve,reject)=>{
+    const process=spawn(python,[connectorSeedPath,currentIdentity.tenant_id,investigation,entity,JSON.stringify(snapshot)],{cwd:directory,env,windowsHide:true,stdio:['ignore','pipe','pipe']});
+    let output='',error='';process.stdout.on('data',chunk=>output+=chunk.toString());process.stderr.on('data',chunk=>error+=chunk.toString());
+    process.on('error',reject);process.on('exit',code=>code===0?resolve(output.trim()):reject(Error(error)));
+  });
+  const findingResponse=await page.request.post(origin+`/v1/investigations/${investigation}/findings`,{data:{entity_id:entity,connector_run_id:runId,title:'Achado vinculado à coleta isolada',statement:'Declaração persistida e submetida à revisão humana no teste.',source_name:'Fonte do teste isolado',method:'connector_run',collected_at:'2026-10-01T12:00:00Z',reliability_score:0.5,limitations:['Registro exclusivamente de teste.']}});
+  assert.equal(findingResponse.status(),201,await findingResponse.text());
+  const finding=(await findingResponse.json()).id;
+  await page.reload();await page.locator('body:not(.auth-pending) .page-title').waitFor();
+  assert.equal((await bootstrap()).osintFindings.find(row=>row.id===finding).runId,runId);
+  await page.evaluate(id=>{openInvestigationWorkspace(id);switchOsintTab('achados');},investigation);
+  const findingRow=page.locator('#modal tbody tr').filter({hasText:'Achado vinculado à coleta isolada'});
+  const reviewed=page.waitForResponse(response=>new URL(response.url()).pathname===`/v1/findings/${finding}`&&response.request().method()==='PATCH');
+  await findingRow.getByRole('button',{name:'Validar',exact:true}).click();assert.ok((await reviewed).ok());
+  await page.reload();await page.locator('body:not(.auth-pending) .page-title').waitFor();
+  const savedFinding=(await bootstrap()).osintFindings.find(row=>row.id===finding);
+  assert.equal(savedFinding.runId,runId);assert.equal(savedFinding.humanValidated,true);
+  assert.equal(savedFinding.classification,'conclusao_humana');
+  await page.evaluate(()=>navigateSection('osinttools'));
+  await page.locator(`[data-tool-run="${runId}"]`).click();
+  await page.getByText('Consulta concluída',{exact:false}).first().waitFor();
+  assert.match(await page.locator('#otRawWrap').textContent(),/Cidade do teste isolado/);
+  assert.equal(await page.evaluate(()=>osintToolsState.lastResult.runId),runId);
+  await page.reload();await page.locator('body:not(.auth-pending) .page-title').waitFor();
+  await page.locator(`[data-tool-run="${runId}"]`).click();await page.locator('#otRawWrap').waitFor();
+  assert.deepEqual(await page.evaluate(()=>osintToolsState.lastResult.data),snapshot);
+  console.log('PASS OSINT history and linked finding review reloaded from the real database');
+
+  // A client-side edit must never enter an investigative report. The POST
+  // carries only an idempotency key and the server reads its persisted records.
+  await page.evaluate(({investigation,finding})=>{
+    DB.investigations.find(row=>row.id===investigation).expected='CONTEÚDO SOMENTE NO NAVEGADOR';
+    DB.osintFindings.find(row=>row.id===finding).statement='CONTEÚDO SOMENTE NO NAVEGADOR';
+    openInvestigationWorkspace(investigation);switchOsintTab('relatorio');
+  },{investigation,finding});
+  await page.locator('#modal').getByRole('button',{name:'📄 Criar rascunho investigativo',exact:true}).click();
+  const reportSaved=page.waitForResponse(response=>new URL(response.url()).pathname===`/v1/investigations/${investigation}/report-draft`&&response.request().method()==='POST');
+  await page.locator('#modal').getByRole('button',{name:'Confirmar',exact:true}).click();
+  const reportResponse=await reportSaved;assert.equal(reportResponse.status(),201,await reportResponse.text());
+  const reportReceipt=await reportResponse.json();assert.equal(reportReceipt.status,'DRAFT');assert.match(reportReceipt.content_hash,/^[a-f0-9]{64}$/);
+  const reportCommand=reportResponse.request().postDataJSON();assert.deepEqual(Object.keys(reportCommand),['request_id']);
+  await page.locator('#reportsRecords h3').filter({hasText:'Relatório investigativo — Investigação do teste'}).waitFor();
+  await page.reload();await page.locator('body:not(.auth-pending) .page-title').waitFor();
+  await page.locator('#reportsRecords h3').filter({hasText:'Relatório investigativo — Investigação do teste'}).waitFor();
+  await page.locator('#reportsRecords').getByText('Revisar conteúdo',{exact:true}).click();
+  assert.match(await page.locator('#reportsRecords').textContent(),/Qual registro foi consultado/);
+  assert.doesNotMatch(await page.locator('#reportsRecords').textContent(),/CONTEÚDO SOMENTE NO NAVEGADOR/);
+  const reportsResponse=await page.request.get(origin+`/v1/reports?investigation_id=${investigation}`);assert.ok(reportsResponse.ok());
+  const reports=await reportsResponse.json();assert.equal(reports.length,1);
+  const report=reports[0];assert.equal(report.id,reportReceipt.report_id);assert.equal(report.content_hash,reportReceipt.content_hash);
+  assert.equal(report.body.investigation.expected_result,investigationRecord.expected);
+  assert.equal(report.body.investigation.responsible,investigationRecord.owner);
+  assert.deepEqual(report.body.investigation.questions,investigationRecord.questions);
+  assert.deepEqual(report.body.entities[0].aliases,['Nome anterior','Razão alternativa']);
+  assert.equal(report.body.findings[0].connector_run_id,runId);assert.equal(report.body.findings[0].reviewed,true);
+  assert.equal(report.body.findings[0].statement,'Declaração persistida e submetida à revisão humana no teste.');
+  assert.equal(report.body.collections[0].id,runId);assert.equal(report.body.collections[0].status,'completed');
+  const repeatedReport=await page.request.post(origin+`/v1/investigations/${investigation}/report-draft`,{data:reportCommand});
+  assert.equal(repeatedReport.status(),201,await repeatedReport.text());assert.deepEqual(await repeatedReport.json(),reportReceipt);
+  assert.equal((await (await page.request.get(origin+`/v1/reports?investigation_id=${investigation}`)).json()).length,1);
+  console.log('PASS Investigative report persists server records, rejects browser-only content and reuses the command receipt');
+
   await page.evaluate(async id=>{await refreshBackendBootstrap();openInvestigationWorkspace(id);switchOsintTab('motores');},investigation);
   await page.locator('#investigationEngines summary').click();
   await page.locator('#engineInvestigation').selectOption(investigation);
@@ -167,6 +271,71 @@ let child, browser;
   assert.match(await page.locator('[data-engine-detail]').textContent(),/Revisão registrada pelo responsável/);
   await page.evaluate(()=>closeModal());
   const audit=await page.request.get(origin+'/v1/audit-events');assert.ok((await audit.json()).length>0);
+  // Dashboard -> real aggregates from the isolated database, including writes made
+  // after bootstrap. Browser-only rows must never become operational indicators.
+  async function api(path,method='GET',data){
+    const response=await page.request.fetch(origin+'/v1'+path,{method,...(data?{data}:{})});
+    assert.ok(response.ok(),`${method} ${path}: ${response.status()} ${await response.text()}`);
+    return response.status()===204?null:response.json();
+  }
+  const baseline=await api('/dashboard?month=2026-10');
+  const yesterday=new Date(baseline.today+'T12:00:00Z');yesterday.setUTCDate(yesterday.getUTCDate()-1);
+  const late=await api('/deadlines','POST',{process_id:legalCase.id,title:'Prazo atrasado do banco',due_date:yesterday.toISOString().slice(0,10),status:'pending'});
+  const cancelled=await api('/appointments','POST',{process_id:legalCase.id,title:'Compromisso cancelado do banco',appointment_date:baseline.today,status:'cancelled'});
+  const extras=[];
+  for(const data of [
+    {entry_type:'revenue',status:'received',entry_date:'2026-09-13',amount:'500.00'},
+    {entry_type:'expense',status:'paid',entry_date:'2026-10-13',amount:'40.00'},
+    {entry_type:'revenue',status:'overdue',entry_date:'2026-10-13',amount:'80.00'},
+    {entry_type:'expense',status:'overdue',entry_date:'2026-10-13',amount:'30.00'},
+    {entry_type:'revenue',status:'forecast',entry_date:'2026-10-13',amount:'99.95'},
+  ]) extras.push(await api('/financial-entries','POST',{client_id:client.id,description:'Lançamento isolado do dashboard',...data}));
+  const projection=await api('/dashboard?month=2026-10');
+  assert.equal(projection.counts.critical_deadlines,baseline.counts.critical_deadlines+1);
+  assert.equal(projection.counts.overdue_deadlines,baseline.counts.overdue_deadlines+1);
+  assert.equal(projection.counts.appointments_today,baseline.counts.appointments_today);
+  assert.equal(projection.counts.stored_files,0);assert.equal(projection.counts.pending_files,1);
+  assert.equal(projection.financial.received_month,'250.75');assert.equal(projection.financial.net_month,'210.75');
+  assert.equal(projection.financial.overdue_receivables,'80.00');assert.equal(projection.financial.overdue_payables,'30.00');
+  assert.ok(projection.urgent_actions.items.some(row=>row.id===late.id));
+  await page.evaluate(()=>{
+    DB.files.push({id:'only-in-browser',name:'not-stored.pdf'});
+    DB.audit=Array.from({length:9999},(_,i)=>({id:String(i)}));
+    DB.financial=[];DB.deadlines=[];DB.appointments=[];
+    navigateSection('dashboard');
+  });
+  await page.getByText('Dados consultados com sucesso.',{exact:true}).waitFor();
+  assert.equal(await page.locator('[data-metric=stored_files] .kpi-value').textContent(),'0');
+  assert.notEqual(await page.locator('[data-metric=total_audit_events] .kpi-value').textContent(),'9999');
+  assert.equal(await page.locator('[data-metric=critical_deadlines] .kpi-value').textContent(),String(projection.counts.critical_deadlines));
+  await page.locator('[data-metric=critical_deadlines]').click();
+  await page.locator('.page-title').filter({hasText:'Prazos'}).waitFor();
+  assert.ok((await page.evaluate(()=>DB.deadlines)).some(row=>row.id===late.id),'Opening details must refresh the server records instead of retaining the empty browser cache');
+  await page.evaluate(()=>navigateSection('dashboard'));await page.getByText('Dados consultados com sucesso.',{exact:true}).waitFor();
+  await page.locator('#dashboardMonth').fill('2026-10');await page.locator('#dashboardMonth').dispatchEvent('change');
+  await page.getByText('Dados consultados com sucesso.',{exact:true}).waitFor();
+  assert.match(await page.locator('.detail-row').filter({hasText:'Recebido no período'}).textContent(),/250,75/);
+  assert.match(await page.locator('.detail-row').filter({hasText:'Saldo dos lançamentos'}).textContent(),/210,75/);
+  await page.locator('[data-dashboard-day="2026-10-14"]').click();
+  await page.getByText('Compromisso: Reunião do teste',{exact:true}).waitFor();
+  assert.match(await page.locator('#dashboardRecords').textContent(),/Concluído/);
+  await page.locator('[data-dashboard-close]').click();
+  await page.locator('[data-dashboard-month-step="-1"]').click();
+  await page.getByText('Dados consultados com sucesso.',{exact:true}).waitFor();
+  assert.match(await page.locator('.detail-row').filter({hasText:'Recebido no período'}).textContent(),/500,00/);
+  // Failure must preserve a clearly marked old snapshot, never invent zeros.
+  await page.route('**/v1/dashboard?*',route=>route.fulfill({status:503,json:{detail:'Isolated failure'}}));
+  await page.locator('[data-dashboard-refresh]').click();
+  await page.locator('#dashboardStatus[role=alert]').waitFor();
+  assert.match(await page.locator('#dashboardStatus').textContent(),/última consulta/);
+  assert.match(await page.locator('.detail-row').filter({hasText:'Recebido no período'}).textContent(),/500,00/);
+  await page.unroute('**/v1/dashboard?*');
+  await api('/financial-entries/'+extras.at(-1).id,'PATCH',{client_id:client.id,description:'Lançamento isolado do dashboard',entry_type:'revenue',status:'forecast',entry_date:'2026-10-13',amount:'120.50'});
+  await page.locator('[data-dashboard-refresh]').click();await page.getByText('Dados consultados com sucesso.',{exact:true}).waitFor();
+  assert.match(await page.locator('[data-metric=forecast_revenue] .kpi-value').textContent(),/120,50/);
+  for(const item of extras)await api('/financial-entries/'+item.id,'DELETE');
+  await api('/deadlines/'+late.id,'DELETE');await api('/appointments/'+cancelled.id,'DELETE');
+  console.log('PASS Dashboard real database aggregates, periods, cancelled/overdue records, refresh and browser-state independence');
   for(const [name,id,route]of [['deleteFinancial',financial.id,'financial-entries'],['deleteAppointment',appointment.id,'appointments'],['deleteDeadline',deadline.id,'deadlines']]){
     const waiting=page.waitForResponse(response=>new URL(response.url()).pathname===`/v1/${route}/${id}`&&response.request().method()==='DELETE');
     await page.evaluate(({name,id})=>window[name](id),{name,id});assert.ok((await waiting).ok());
@@ -174,5 +343,5 @@ let child, browser;
   await page.reload();await page.locator('body:not(.auth-pending) .page-title').waitFor();
   const after=await bootstrap();assert.equal(after.financial.length,0);assert.equal(after.appointments.length,0);assert.equal(after.deadlines.length,0);
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({passed:true,realApi:true,isolatedDatabase:true,flows:['client create/edit','process create/edit','deadline create/edit/delete','appointment create/edit/delete','financial create/edit/delete','intimation create/launch','reload persistence','audit persistence','client profile save/reload','document link/reload/detach preserves original','investigation plan/review/reload'],browserErrors:errors.length}));
+  console.log(JSON.stringify({passed:true,realApi:true,isolatedDatabase:true,flows:['client create/edit','process create/edit','deadline create/edit/delete','appointment create/edit/delete','financial create/edit/delete','intimation create/launch','reload persistence','audit persistence','client profile save/reload','document link/reload/detach preserves original','investigation wizard fields/reload','entity aliases/reload','OSINT saved history/reopen','finding collection link/review/reload','investigative report from persisted records/reload/idempotency','investigation plan/review/reload','dashboard aggregates/calendar/refresh from database'],browserErrors:errors.length}));
 })().catch(error=>{console.error(error);process.exitCode=1;}).finally(async()=>{await browser?.close();if(child?.exitCode===null)child.kill();});

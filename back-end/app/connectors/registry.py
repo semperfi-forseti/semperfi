@@ -1,9 +1,10 @@
 from app.connectors.brasilapi import BrasilApiConnector
 from app.connectors.datajud import DataJudConnector
+from app.connectors.osint_tools import OsintToolsConnector
 from app.connectors.rdap import RdapConnector
 from app.connectors.transparency import TransparencyConnector
 
-CONNECTORS = {c.connector_id: c for c in [BrasilApiConnector(), TransparencyConnector(), DataJudConnector(), RdapConnector()]}
+CONNECTORS = {c.connector_id: c for c in [BrasilApiConnector(), TransparencyConnector(), DataJudConnector(), RdapConnector(), OsintToolsConnector()]}
 
 
 def get_connector(connector_id: str):

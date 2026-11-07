@@ -1,4 +1,4 @@
-﻿/* ============================================================
+/* ============================================================
    SEMPER-FI — Central Jurídica Operacional
    Sistema de gestão jurídica com sessão autenticada
    Persistência operacional: API /v1 | Preferências visuais: localStorage
@@ -395,19 +395,7 @@ async function createBackendEvidenceRecord({ investigationId, sourceName, source
 }
 
 // ---------- Audit ----------
-function audit(module, action, target, result='sucesso'){
-  const entry = {
-    id: uid('aud'),
-    timestamp: Date.now(),
-    actor: SETTINGS.userName || '',
-    profile: SETTINGS.userProfile || 'Advogado',
-    module, action, target, result,
-    correlationId: Math.random().toString(36).slice(2,12)
-  };
-  DB.audit.unshift(entry);
-  if (DB.audit.length > 500) DB.audit = DB.audit.slice(0,500);
-  saveDB();
-}
+function audit(){ /* Audit events are created by authenticated backend operations. */ }
 
 // ---------- CRUD genéricos ----------
 function dbCreate(collection, item){
@@ -476,98 +464,35 @@ function toast(msg, type='info'){
   if (!['error','warning'].includes(type) && !window.SemperfiAccessibility?.getPreferences().keepNotices) timer = setTimeout(remove,12000);
 }
 
-// ---------- Notifications (derivadas do estado) ----------
-function computeNotifications(){
-  const out = [];
-  const today = toISO(new Date());
-  DB.deadlines.filter(d=>d.status==='pendente').forEach(d=>{
-    const diff = daysBetween(today, d.date);
-    if (diff <= 7){
-      const proc = dbGet('processes', d.processId);
-      out.push({
-        id:'n-'+d.id,
-        title: diff<=0 ? `🔴 Prazo crítico hoje: ${d.title}` : `⏰ Prazo em ${diff} dia(s): ${d.title}`,
-        sub: proc?.number || '—',
-        time: fmtDate(d.date),
-        section: 'deadlines'
-      });
-    }
-  });
-  DB.intimations.filter(i=>i.status==='triagem'||i.status==='recebida').slice(0,5).forEach(i=>{
-    out.push({
-      id:'n-'+i.id,
-      title: `📧 Intimação ${i.status==='triagem'?'em triagem':'recebida'}: ${i.source}`,
-      sub: i.content.slice(0,60)+'...',
-      time: fmtDateTime(i.receivedAt),
-      section: 'intimations'
-    });
-  });
-  DB.financial.filter(f=>f.status==='vencido').forEach(f=>{
-    out.push({
-      id:'n-'+f.id,
-      title: `💰 Vencido: ${fmtMoney(f.amount)}`,
-      sub: f.description,
-      time: fmtDate(f.date),
-      section: 'financial'
-    });
-  });
-  return out;
-}
-
-function renderNotifications(){
-  const list = computeNotifications();
-  document.getElementById('notifBadge').textContent = list.length;
-  document.getElementById('notifBadge').style.display = list.length ? 'flex' : 'none';
-  const html = list.length
-    ? list.map(n => `<div class="notif-item" data-section="${n.section}"><div class="notif-item-title">${escapeHTML(n.title)}</div><div class="text-muted" style="font-size:11px">${escapeHTML(n.sub)}</div><div class="notif-item-time">${escapeHTML(n.time)}</div></div>`).join('')
-    : '<div class="empty-state" style="padding:32px"><div>Sem notificações</div></div>';
-  document.getElementById('notifList').innerHTML = html;
-  document.querySelectorAll('#notifList .notif-item').forEach(el=>{
-    el.addEventListener('click', ()=>{
-      navigateSection(el.dataset.section);
+// ---------- Notifications from persisted server records ----------
+let notificationsVersion = 0;
+async function renderNotifications(){
+  const version = ++notificationsVersion;
+  const badge = document.getElementById('notifBadge');
+  const list = document.getElementById('notifList');
+  list.setAttribute('aria-busy','true');
+  try {
+    const result = await backendApi('/dashboard/alerts?limit=20',{cache:'no-store'});
+    if (version !== notificationsVersion) return;
+    if (!Number.isSafeInteger(result.total) || result.total < 0 || !Array.isArray(result.items)) throw Error('Invalid alerts');
+    badge.textContent = result.total;
+    badge.style.display = result.total ? 'flex' : 'none';
+    document.getElementById('notificationBtn').setAttribute('aria-label',`Notificações: ${result.total} aviso(s)`);
+    list.innerHTML = result.items.length
+      ? `${result.total > result.items.length ? `<p class="text-muted notif-summary">${result.items.length} de ${result.total} avisos. Consulte todos na Visão Geral.</p>` : ''}${result.items.map(item => `<button type="button" class="notif-item" data-section="${['deadlines','intimations','financial'].includes(item.section)?item.section:'dashboard'}"><span class="notif-item-title">${escapeHTML(item.title)}</span><span class="text-muted">${escapeHTML(item.description)}${item.amount?' · '+escapeHTML(fmtMoney(Number(item.amount))):''}</span><span class="notif-item-time">${escapeHTML(fmtDate(item.date))}</span></button>`).join('')}`
+      : '<p class="empty-state">Nenhum alerta pendente nos registros consultados.</p>';
+    list.querySelectorAll('.notif-item').forEach(button=>button.onclick=()=>{
+      openDashboardRecords(button.dataset.section);
       document.getElementById('notifPanel').classList.remove('active');
     });
-  });
+  } catch (_) {
+    if (version !== notificationsVersion) return;
+    badge.textContent = '?';badge.style.display = 'flex';
+    document.getElementById('notificationBtn').setAttribute('aria-label','Notificações indisponíveis. Abrir para tentar novamente.');
+    list.innerHTML = '<p role="alert">Não foi possível consultar os avisos.</p><button type="button" class="btn btn-secondary" data-notif-retry>Tentar novamente</button>';
+    list.querySelector('[data-notif-retry]').onclick=renderNotifications;
+  } finally { if(version===notificationsVersion)list.setAttribute('aria-busy','false'); }
 }
-
-computeNotifications = function(){
-  syncCommercialState({persist:false});
-  const out = [];
-  const today = toISO(new Date());
-  DB.deadlines.filter(d=>d.status==='pendente').forEach(d=>{
-    const diff = daysBetween(today, d.date);
-    if (diff <= 7){
-      const proc = dbGet('processes', d.processId);
-      out.push({
-        id:'n-'+d.id,
-        title: diff<=0 ? `🔴 Prazo crítico hoje: ${d.title}` : `⏰ Prazo em ${diff} dia(s): ${d.title}`,
-        sub: proc?.number || '—',
-        time: fmtDate(d.date),
-        section: 'deadlines'
-      });
-    }
-  });
-  DB.intimations.filter(i=>i.status==='triagem'||i.status==='recebida').slice(0,5).forEach(i=>{
-    out.push({
-      id:'n-'+i.id,
-      title: `📧 Intimação ${i.status==='triagem'?'em triagem':'recebida'}: ${i.source}`,
-      sub: i.content.slice(0,60)+'...',
-      time: fmtDateTime(i.receivedAt),
-      section: 'intimations'
-    });
-  });
-  DB.financial.filter(f=>f.status==='vencido').forEach(f=>{
-    out.push({
-      id:'n-'+f.id,
-      title: `💰 Vencido: ${fmtMoney(f.amount)}`,
-      sub: f.description,
-      time: fmtDate(f.date),
-      section: 'financial'
-    });
-  });
-  return out;
-};
-
 // ---------- Navigation ----------
 const SECTIONS = [
   {id:'billing',    icon:'💳', label:'Plano & Consumo'},
@@ -623,7 +548,31 @@ function navigateSection(id){
   renderSection(id);
 }
 
+let dashboardController = null;
+let sectionRenderVersion = 0;
+let dashboardNavigationPending = false;
+async function openDashboardRecords(id){
+  if (!['processes','deadlines','agenda','intimations','financial'].includes(id)) { navigateSection(id); return; }
+  if (dashboardNavigationPending) return;
+  dashboardNavigationPending = true;
+  const version = sectionRenderVersion;
+  const status = document.getElementById('dashboardStatus');
+  if(status) {status.setAttribute('role','status');status.textContent='Consultando registros para abrir a seção…';}
+  try {
+    await refreshBackendBootstrap();
+    if(version===sectionRenderVersion && !document.getElementById('modal').classList.contains('active')) navigateSection(id);
+  } catch(error) {
+    if(version===sectionRenderVersion) {
+      toast('Não foi possível atualizar a lista. Tente abrir a seção novamente.','error');
+      if(error?.status===401||error?.status===403)dashboardController?.reload();
+      else if(status?.isConnected){status.setAttribute('role','alert');status.textContent='Não foi possível abrir a lista atualizada. Os indicadores mantêm a última consulta indicada abaixo.';}
+    }
+  } finally {dashboardNavigationPending=false;}
+}
 function renderSection(id){
+  sectionRenderVersion++;
+  dashboardController?.dispose();
+  dashboardController = null;
   syncCommercialState({persist:false});
   const wrapper = document.getElementById('contentWrapper');
   const renderer = SECTION_RENDERERS[id];
@@ -670,99 +619,10 @@ document.getElementById('modal').addEventListener('click', e => { if (e.target.i
 // ============================================================
 //                        DASHBOARD
 // ============================================================
-SECTION_RENDERERS.dashboard = () => {
-  const today = toISO(new Date());
-  const activeProcesses = DB.processes.filter(p=>p.status!=='arquivado').length;
-  const criticalDeadlines = DB.deadlines.filter(d=>d.status==='pendente' && daysBetween(today,d.date)<=7 && daysBetween(today,d.date)>=0).length;
-  const todayAppts = DB.appointments.filter(a=>a.date===today).length;
-  const completedAppts = DB.appointments.filter(a=>a.date===today && a.status==='concluido').length;
-  const pendingIntims = DB.intimations.filter(i=>i.status==='recebida'||i.status==='triagem').length;
-  const triageIntims = DB.intimations.filter(i=>i.status==='triagem').length;
-  const revenueExpected = DB.financial.filter(f=>f.type==='receita'&&f.status==='previsto').reduce((s,f)=>s+f.amount,0);
-  const overdue = DB.financial.filter(f=>f.status==='vencido').reduce((s,f)=>s+f.amount,0);
-  const overdueCount = DB.financial.filter(f=>f.status==='vencido').length;
-  const received = DB.financial.filter(f=>f.type==='receita'&&f.status==='recebido').reduce((s,f)=>s+f.amount,0);
-  const pendingFiles = DB.files.length;
-
-  const upcomingDeadlines = DB.deadlines
-    .filter(d=>d.status==='pendente')
-    .sort((a,b)=>a.date.localeCompare(b.date))
-    .slice(0,5);
-
-  const urgentActions = [];
-  DB.deadlines.filter(d=>d.status==='pendente').forEach(d=>{
-    const diff = daysBetween(today,d.date);
-    if (diff<=2 && diff>=0){
-      urgentActions.push({color:'danger', label:'Prazo crítico', text:`${d.title} — ${diff===0?'hoje':diff+' dia(s)'}`});
-    }
-  });
-  DB.intimations.filter(i=>i.status==='triagem').forEach(i=>{
-    urgentActions.push({color:'warning', label:'Intimação sem associação', text:`${i.source} - aguardando triagem`});
-  });
-  DB.financial.filter(f=>f.status==='vencido').forEach(f=>{
-    const c = dbGet('clients', f.clientId);
-    urgentActions.push({color:'gold-accent', label:'Cliente vencido', text:`${c?.name||'—'} — ${fmtMoney(f.amount)}`});
-  });
-
-  return `
-    <h1 class="page-title">Visão Geral</h1>
-    <p class="page-subtitle">Dashboard operacional jurídico — atualizado em ${new Date().toLocaleString('pt-BR')}</p>
-
-    <div class="kpi-grid">
-      <div class="kpi-card" onclick="navigateSection('processes')"><div class="kpi-label">Processos ativos</div><div class="kpi-value">${activeProcesses}</div><div class="kpi-change">Total na base</div></div>
-      <div class="kpi-card" onclick="navigateSection('deadlines')"><div class="kpi-label">Prazos críticos (7 dias)</div><div class="kpi-value" style="color:${criticalDeadlines?'var(--danger)':'var(--success)'}">${criticalDeadlines}</div><div class="kpi-change ${criticalDeadlines?'negative':'positive'}">${criticalDeadlines?'⚠ Requerem atenção':'✓ Sob controle'}</div></div>
-      <div class="kpi-card" onclick="navigateSection('agenda')"><div class="kpi-label">Compromissos hoje</div><div class="kpi-value">${todayAppts}</div><div class="kpi-change">${completedAppts} completados</div></div>
-      <div class="kpi-card" onclick="navigateSection('intimations')"><div class="kpi-label">Intimações pendentes</div><div class="kpi-value">${pendingIntims}</div><div class="kpi-change">${triageIntims} em triagem</div></div>
-    </div>
-
-    <div class="kpi-grid">
-      <div class="kpi-card" onclick="navigateSection('financial')"><div class="kpi-label">Receita prevista</div><div class="kpi-value">${fmtMoney(revenueExpected)}</div><div class="kpi-change positive">A receber</div></div>
-      <div class="kpi-card" onclick="navigateSection('financial')"><div class="kpi-label">Inadimplência</div><div class="kpi-value" style="color:${overdue?'var(--danger)':'var(--success)'}">${fmtMoney(overdue)}</div><div class="kpi-change ${overdue?'negative':'positive'}">${overdueCount} vencido(s)</div></div>
-      <div class="kpi-card" onclick="navigateSection('metadata')"><div class="kpi-label">Arquivos armazenados</div><div class="kpi-value">${pendingFiles}</div><div class="kpi-change">Total</div></div>
-      <div class="kpi-card" onclick="navigateSection('audit')"><div class="kpi-label">Eventos auditados</div><div class="kpi-value">${DB.audit.length}</div><div class="kpi-change positive">✓ Trilha ativa</div></div>
-    </div>
-
-    <div class="grid-2x2">
-      <div class="panel">
-        <div class="panel-title">Ação necessária agora <button class="panel-title-action" onclick="navigateSection('deadlines')">Ver tudo</button></div>
-        <div style="font-size:13px">
-          ${urgentActions.length ? urgentActions.slice(0,5).map(a=>`
-            <div style="padding:12px;background:var(--obsidian);border-radius:6px;margin-bottom:8px;border-left:3px solid var(--${a.color})">
-              <div style="color:var(--${a.color});font-weight:600;margin-bottom:4px">${a.label}</div>
-              <div class="text-muted">${escapeHTML(a.text)}</div>
-            </div>`).join('') : '<div class="empty-state" style="padding:24px"><div>✓ Nada urgente</div></div>'}
-        </div>
-      </div>
-
-      <div class="panel">
-        <div class="panel-title">Calendário</div>
-        <div id="dashboardCalendar"></div>
-      </div>
-
-      <div class="panel">
-        <div class="panel-title">Prazos iminentes <button class="panel-title-action" onclick="navigateSection('deadlines')">Ver tudo</button></div>
-        <div class="timeline">
-          ${upcomingDeadlines.length ? upcomingDeadlines.map(d=>{
-            const proc = dbGet('processes', d.processId);
-            const diff = daysBetween(today,d.date);
-            const lbl = diff===0?'Hoje':diff===1?'Amanhã':diff<0?`Vencido (${-diff}d)`:fmtDate(d.date);
-            return `<div class="timeline-item"><div class="timeline-date">${lbl}</div><div class="timeline-content">${escapeHTML(d.title)} — ${escapeHTML(proc?.number||'—')}</div></div>`;
-          }).join('') : '<div class="text-muted">Nenhum prazo pendente</div>'}
-        </div>
-      </div>
-
-      <div class="panel">
-        <div class="panel-title">Resumo financeiro <button class="panel-title-action" onclick="navigateSection('financial')">Detalhes</button></div>
-        <div class="detail-row"><span class="detail-label">Recebido este mês:</span><span class="detail-value" style="color:var(--success)">${fmtMoney(received)}</span></div>
-        <div class="detail-row"><span class="detail-label">A receber:</span><span class="detail-value" style="color:var(--teal-accent)">${fmtMoney(revenueExpected)}</span></div>
-        <div class="detail-row"><span class="detail-label">Vencido:</span><span class="detail-value" style="color:var(--danger)">${fmtMoney(overdue)}</span></div>
-        <div class="detail-row"><span class="detail-label">Saldo líquido (mês):</span><span class="detail-value" style="color:var(--gold-accent)">${fmtMoney(received - DB.financial.filter(f=>f.type==='despesa'&&f.status==='pago').reduce((s,f)=>s+f.amount,0))}</span></div>
-      </div>
-    </div>
-  `;
+SECTION_RENDERERS.dashboard = () => window.SemperfiDashboard.render();
+SECTION_AFTER.dashboard = () => {
+  dashboardController = window.SemperfiDashboard.mount({request:backendApi,navigate:openDashboardRecords,openModal,closeModal});
 };
-SECTION_AFTER.dashboard = () => { renderMiniCalendar(document.getElementById('dashboardCalendar')); };
-
 // ---------- Mini Calendar ----------
 let calendarState = { year: new Date().getFullYear(), month: new Date().getMonth() };
 
@@ -2203,6 +2063,7 @@ document.getElementById('maskToggle').onclick = () => {
 document.getElementById('notificationBtn').onclick = (e) => {
   e.stopPropagation();
   document.getElementById('notifPanel').classList.toggle('active');
+  if(document.getElementById('notifPanel').classList.contains('active')) renderNotifications();
   document.getElementById('profileMenu').classList.remove('active');
 };
 document.getElementById('clearNotifs').onclick = () => {
@@ -2294,24 +2155,7 @@ async function maskAndFingerprint(value){
 }
 
 // ---------- Auditoria OSINT (encadeada por investigação) ----------
-async function osintAudit(action, investigationId, details={}){
-  const entry = {
-    id: uid('aud'),
-    timestamp: Date.now(),
-    actor: SETTINGS.userName || '',
-    profile: SETTINGS.userProfile || 'Advogado',
-    module: 'osint',
-    action,
-    target: investigationId || '—',
-    result: details.result || 'sucesso',
-    correlationId: Math.random().toString(36).slice(2,12),
-    osintMeta: { investigationId, ...details }
-  };
-  DB.audit.unshift(entry);
-  if (DB.audit.length > 500) DB.audit = DB.audit.slice(0,500);
-  saveDB();
-  return entry;
-}
+async function osintAudit(){ /* No browser-generated audit records. */ }
 
 // ---------- Estado UI OSINT ----------
 const osintState = {
@@ -2550,7 +2394,7 @@ function renderWizardStep(){
       <div class="form-group"><label class="form-label">Título da investigação *</label><input class="form-input" id="wz_title" value="${escapeHTML(d.title||'')}" placeholder="Ex: Due diligence Empresa XYZ"></div>
       <div class="form-row">
         <div class="form-group"><label class="form-label">Categoria *</label><select class="form-select" id="wz_category">${Object.entries(OSINT_VOCAB.category).map(([k,v])=>`<option value="${k}" ${d.category===k?'selected':''}>${v}</option>`).join('')}</select></div>
-        <div class="form-group"><label class="form-label">Prioridade</label><select class="form-select" id="wz_priority"><option value="baixa">Baixa</option><option value="media" selected>Média</option><option value="alta">Alta</option><option value="critica">Crítica</option></select></div>
+        <div class="form-group"><label class="form-label" for="wz_priority">Prioridade</label><select class="form-select" id="wz_priority">${[['baixa','Baixa'],['media','Média'],['alta','Alta'],['critica','Crítica']].map(([value,label])=>`<option value="${value}" ${value===(d.priority||'media')?'selected':''}>${label}</option>`).join('')}</select></div>
       </div>
       <div class="form-row">
         <div class="form-group"><label class="form-label">Cliente *</label><select class="form-select" id="wz_clientId"><option value="">— selecionar —</option>${cliOpts}</select></div>
@@ -2682,13 +2526,18 @@ async function wizardFinish(){
           client_id: d.clientId || null,
           process_id: d.processId || null,
           hypothesis: d.hypothesis || null,
+          operational_owner: d.owner || null,
+          priority: d.priority,
+          deadline: d.deadline || null,
+          questions: d.questions || [],
+          expected_result: d.expected || null,
           scope_codes: d.scope,
           retention_until: new Date(addCalendarDays(new Date(), (d.retentionYears||5)*365)).toISOString()
         })
       });
       investigation.id = String(saved.id);
       investigation.status = saved.status || investigation.status;
-      dbCreate('investigations', investigation);
+      await refreshBackendBootstrap();
     } else {
       DB.investigations.push(investigation);
       saveDB();
@@ -2743,6 +2592,7 @@ function renderWorkspace(){
   openModal({ wide:true, title:`🕵️ ${escapeHTML(inv.title)} ${statusChip(inv.status)} ${isReadOnly?'<span class="badge badge-warning">Somente leitura</span>':''}`, body: tabsHTML + content, footer:`<button class="btn btn-secondary" onclick="closeModal()">Fechar</button>`,
     onMount(modal){
       if(osintState.workspaceTab==='motores') window.SemperfiInvestigationEngines.mount(modal.querySelector('#investigationEngines'),{api:backendApi,investigations:[{...inv,scope_codes:inv.scope||[]}],canWrite:!isReadOnly&&canEditLegalRecords(),masked:SETTINGS.masked});
+      if(osintState.workspaceTab==='timeline') mountInvestigationTimeline(modal.querySelector('#investigationTimeline'),inv.id);
     }
   });
 }
@@ -2845,15 +2695,28 @@ WORKSPACE_RENDERERS.achados = (inv, ctx) => {
   </tbody></table>`:'<div class="empty-state" style="padding:24px"><div class="text-muted">Nenhum achado. Execute coletas e os agentes gerarão achados.</div></div>';
 };
 
-WORKSPACE_RENDERERS.timeline = (inv) => {
-  const events = DB.audit.filter(a=>a.module==='osint' && a.osintMeta?.investigationId===inv.id).sort((a,b)=>a.timestamp-b.timestamp);
-  return events.length?`<div class="timeline">
-    ${events.map(e=>`<div class="timeline-item">
-      <div class="timeline-date">${fmtDateTime(e.timestamp)} — ${escapeHTML(e.actor)}</div>
-      <div class="timeline-content"><strong>${escapeHTML(e.action)}</strong> ${e.osintMeta?.title?'— '+escapeHTML(e.osintMeta.title):''}</div>
-    </div>`).join('')}
-  </div>`:'<div class="text-muted">Sem eventos.</div>';
-};
+WORKSPACE_RENDERERS.timeline = () => '<section id="investigationTimeline"><p role="status">Consultando atividades registradas…</p></section>';
+function mountInvestigationTimeline(container,investigationId){
+  let version=0;
+  async function load(){
+    const ticket=++version;container.innerHTML='<p role="status">Consultando atividades registradas…</p>';
+    try {
+      const payload=await backendApi('/frontend/bootstrap',{cache:'no-store'});
+      if(!container.isConnected||ticket!==version)return;
+      if(!Array.isArray(payload?.data?.audit))throw Error('Invalid audit response');
+      const events=payload.data.audit.filter(item=>item.module==='osint'&&item.osintMeta?.investigationId===investigationId);
+      if(events.some(item=>typeof item.action!=='string'||!Number.isFinite(Date.parse(item.timestamp))))throw Error('Invalid audit records');
+      events.sort((a,b)=>Date.parse(a.timestamp)-Date.parse(b.timestamp));
+      container.innerHTML=`<p class="text-muted">Recorte dos 500 eventos mais recentes da organização, filtrado para esta investigação. Eventos anteriores podem não aparecer nesta consulta.</p>${events.length?`<div class="timeline">${events.map(item=>`<div class="timeline-item"><div class="timeline-date">${escapeHTML(fmtDateTime(item.timestamp))} — ${escapeHTML(item.actor)}</div><div class="timeline-content"><strong>${escapeHTML(item.action)}</strong></div></div>`).join('')}</div>`:'<p>Nenhum evento desta investigação na consulta atual.</p>'}<button class="btn btn-secondary" type="button" data-timeline-refresh>Atualizar histórico</button>`;
+      container.querySelector('[data-timeline-refresh]').onclick=load;
+    } catch(_) {
+      if(!container.isConnected||ticket!==version)return;
+      container.innerHTML='<p role="alert">Não foi possível consultar as atividades registradas.</p><button class="btn btn-secondary" type="button" data-timeline-refresh>Tentar novamente</button>';
+      container.querySelector('[data-timeline-refresh]').onclick=load;
+    }
+  }
+  load();
+}
 
 WORKSPACE_RENDERERS.vinculos = (inv) => {
   const ents = DB.osintEntities.filter(e=>e.investigationId===inv.id);
@@ -2916,8 +2779,8 @@ WORKSPACE_RENDERERS.evidencias = (inv, ctx) => {
 
 WORKSPACE_RENDERERS.relatorio = (inv) => {
   return `
-    <p class="text-muted mb-12" style="font-size:12px">Gera relatório técnico investigativo em 18 seções, com hashes, manifesto de integridade e código de verificação.</p>
-    <button class="btn btn-primary" onclick="generateOsintReport('${inv.id}')">📄 Gerar Relatório Investigativo OSINT</button>
+    <p class="text-muted mb-12">Cria um rascunho a partir dos registros salvos. Revise na aba Relatórios; a aprovação gera o PDF final e o preserva no cofre.</p>
+    <button class="btn btn-primary" onclick="generateOsintReport('${inv.id}')">📄 Criar rascunho investigativo</button>
     <div class="alert alert-warning mt-20"><span>⚠️</span><span>O relatório organiza dados de fontes públicas e registros técnicos. Não substitui validação jurídica, contraditório, perícia oficial ou decisão judicial.</span></div>
   `;
 };
@@ -2980,6 +2843,7 @@ async function saveEntity(investigationId){
           entity_type: mapApiEntityType(ent.entityType),
           display_name: ent.displayName,
           normalized_name: ent.normalizedName,
+          aliases: ent.aliases,
           identifiers: doc ? [{ type:'document', value:doc, primary:true }] : [],
           verification_status: 'preliminary',
           confidence: ent.confidence,
@@ -2988,8 +2852,7 @@ async function saveEntity(investigationId){
       });
       ent.id = String(saved.id);
     }
-    DB.osintEntities.push(ent);
-    saveDB();
+    await refreshBackendBootstrap();
   } catch(err){
     toast(apiErrorMessage(err),'error');
     return;
@@ -3042,6 +2905,7 @@ async function osintConnectorExecute(connectorId, payload, investigationId){
       summary: Object.values(rawData).filter(v=>typeof v !== 'object').slice(0,3).join(' | ') || `Coleta ${connector.name} concluída`,
       rawData,
       confidence: connector.confidenceWeight || 0.7,
+      limitations: res.limitations || [],
       correlationId: res.correlation_id
     };
   }
@@ -3086,50 +2950,33 @@ async function quickPlannerAgent(investigationId, skipBilling=false){
   });
   if (!recommended.length){ toast('Nenhuma fonte compatível com escopo atual','warning'); return; }
   if (!confirm(`Executar ${recommended.length} coleta(s)?`)) return;
-  let okCount=0, errCount=0;
-  for (const task of recommended){
-    try {
-      const run = { id:uid('orun'), investigationId, connectorId:task.connectorId, targetEntityId:task.entityId, purpose:task.purpose, scopeSnapshot:[...scope], requestFingerprint:(await sha256Hex(JSON.stringify(task))).slice(0,16), startedAt:Date.now(), finishedAt:null, status:'em_execucao', resultSummary:null, errorMessage:null, actor:SETTINGS.userName||'', correlationId:Math.random().toString(36).slice(2,12) };
-      DB.osintRuns.push(run); saveDB();
-      const ent = dbGet('osintEntities', task.entityId);
-      const result = await osintConnectorExecute(task.connectorId, {entityId:ent.id}, investigationId);
-      if (result.runId) run.id = result.runId;
-      run.finishedAt = Date.now(); run.status='ok'; run.resultSummary = result.summary;
-      run.rawData = result.rawData;
-      saveDB();
-      // Cria achado automaticamente como "dado_bruto"
-      const finding = { id:uid('ofnd'), investigationId, entityId:task.entityId, type:task.connectorId, title:`${result.summary}`, statement:JSON.stringify(result.rawData).slice(0,500), sourceCount:1, confidenceScore:result.confidence, classification:'dado_bruto', humanValidated:false, reviewer:null, evidenceIds:[], createdAt:Date.now(), updatedAt:Date.now(), runId:run.id };
-      if (isBackendMode()){
-        const savedFinding = await backendApi(`/investigations/${investigationId}/findings`, {
-          method:'POST',
-          body: JSON.stringify({
-            entity_id: task.entityId,
-            classification:'dado_bruto',
-            title:`${result.summary}`,
-            statement:JSON.stringify(result.rawData).slice(0,500),
-            source_name: task.connectorId,
-            source_url: null,
-            method:'connector_run',
-            collected_at: new Date().toISOString(),
-            reliability_score: result.confidence || 0.7,
-            limitations:[]
-          })
-        });
-        finding.id = String(savedFinding.id);
-      }
-      DB.osintFindings.push(finding); saveDB();
-      osintAudit('execucao_coleta', investigationId, {runId:run.id, connectorId:task.connectorId, status:'ok'});
-      okCount++;
-    } catch(err){
-      const message = apiErrorMessage(err);
-      const last = DB.osintRuns[DB.osintRuns.length-1];
-      if (last && last.status==='em_execucao'){ last.status='erro'; last.errorMessage=message; last.finishedAt=Date.now(); saveDB(); }
-      osintAudit('falha_coleta', investigationId, {result:'erro', message});
-      errCount++;
+  await collectInvestigationFindings(investigationId, recommended.map(task=>({entityId:task.entityId,connectorId:task.connectorId})));
+}
+
+const investigationCollections = new Set();
+async function collectInvestigationFindings(investigationId, tasks){
+  if(investigationCollections.has(investigationId)){toast('Já existe uma coleta em andamento nesta investigação.','info');return;}
+  investigationCollections.add(investigationId);
+  let succeeded=0,failed=0;
+  try{
+    for(const task of tasks){
+      try{
+        const result=await osintConnectorExecute(task.connectorId,{entityId:task.entityId},investigationId);
+        await backendApi(`/investigations/${investigationId}/findings`,{method:'POST',body:JSON.stringify({
+          entity_id:task.entityId,connector_run_id:result.runId,classification:'dado_bruto',
+          title:result.summary.slice(0,255),statement:JSON.stringify(result.rawData).slice(0,500),
+          source_name:DB.sourceCatalog.find(source=>source.id===task.connectorId)?.name||task.connectorId,
+          source_url:null,method:'connector_run',collected_at:new Date().toISOString(),
+          reliability_score:result.confidence||0.7,limitations:result.limitations||[]
+        })});
+        succeeded++;
+      }catch(error){failed++;}
     }
-  }
-  toast(`Coletas: ${okCount} OK, ${errCount} erro(s)`, errCount?'warning':'success');
-  renderWorkspace();
+    try{await refreshBackendBootstrap();}
+    catch(error){toast('Atualize a investigação para conferir as coletas e os achados salvos.','warning');}
+    toast(`Coletas: ${succeeded} com achado salvo; ${failed} sem confirmação. Confira as execuções antes de repetir.`,failed?'warning':'success');
+    if(appState.currentSection==='osint'&&osintState.currentInvestigation===investigationId)renderWorkspace();
+  }finally{investigationCollections.delete(investigationId);}
 }
 
 // Coleta de uma entidade específica (todas as fontes compatíveis em escopo)
@@ -3156,46 +3003,7 @@ async function runAgentsForEntity(investigationId, entityId, skipBilling=false){
   const inv = dbGet('investigations', investigationId);
   const scope = inv.scope||[];
   const fontes = DB.sourceCatalog.filter(s=>s.enabled && s.allowedTargetTypes.includes(ent.entityType) && scope.some(sc=>s.category===sc));
-  let succeeded = 0, failed = 0;
-  for (const src of fontes){
-    try {
-      const run = { id:uid('orun'), investigationId, connectorId:src.id, targetEntityId:entityId, purpose:`Coleta ${src.name}`, scopeSnapshot:[...scope], requestFingerprint:(await sha256Hex(src.id+entityId)).slice(0,16), startedAt:Date.now(), finishedAt:null, status:'em_execucao', actor:SETTINGS.userName||'', correlationId:Math.random().toString(36).slice(2,12) };
-      DB.osintRuns.push(run);
-      const result = await osintConnectorExecute(src.id, {entityId:ent.id}, investigationId);
-      if (result.runId) run.id = result.runId;
-      run.finishedAt = Date.now(); run.status='ok'; run.resultSummary = result.summary; run.rawData = result.rawData;
-      const finding = { id:uid('ofnd'), investigationId, entityId, type:src.id, title:result.summary, statement:JSON.stringify(result.rawData).slice(0,500), sourceCount:1, confidenceScore:result.confidence, classification:'dado_bruto', humanValidated:false, evidenceIds:[], createdAt:Date.now(), updatedAt:Date.now(), runId:run.id };
-      if (isBackendMode()){
-        const savedFinding = await backendApi(`/investigations/${investigationId}/findings`, {
-          method:'POST',
-          body: JSON.stringify({
-            entity_id: entityId,
-            classification:'dado_bruto',
-            title:result.summary,
-            statement:JSON.stringify(result.rawData).slice(0,500),
-            source_name: src.name || src.id,
-            source_url: null,
-            method:'connector_run',
-            collected_at: new Date().toISOString(),
-            reliability_score: result.confidence || 0.7,
-            limitations:[]
-          })
-        });
-        finding.id = String(savedFinding.id);
-      }
-      DB.osintFindings.push(finding);
-      saveDB();
-      osintAudit('execucao_coleta', investigationId, {runId:run.id, connectorId:src.id, status:'ok'});
-      succeeded += 1;
-    } catch(err){
-      failed += 1;
-      const pending = DB.osintRuns.findLast(item => item.targetEntityId === entityId && item.connectorId === src.id && item.status === 'em_execucao');
-      if (pending) { pending.status='erro'; pending.errorMessage=apiErrorMessage(err); pending.finishedAt=Date.now(); }
-      osintAudit('falha_coleta', investigationId, {result:'erro', message:apiErrorMessage(err)});
-    }
-  }
-  toast(`Coletas de ${ent.displayName}: ${succeeded} concluída(s), ${failed} falha(s).`, failed ? 'warning' : 'success');
-  renderWorkspace();
+  await collectInvestigationFindings(investigationId,fontes.map(src=>({entityId,connectorId:src.id})));
 }
 
 function showRunDetail(runId){
@@ -3253,6 +3061,13 @@ async function promoteFindingToEvidence(findingId){
   const rawString = JSON.stringify(run?.rawData || f.statement);
   if (isBackendMode()){
     try {
+      if(!f.runId && !f.evidenceIds?.[0])throw new Error('Este achado antigo não possui vínculo com a coleta original. Consulte a fonte novamente antes de preservar o resultado completo.');
+      let storedContent = rawString;
+      if(f.runId){
+        const source = await backendApi(`/osint/runs/${encodeURIComponent(f.runId)}`,{cache:'no-store'});
+        if(source.status!=='completed'||source.investigation_id!==f.investigationId||source.raw_snapshot==null)throw new Error('O resultado completo da coleta não está disponível para preservação.');
+        storedContent = JSON.stringify(source.raw_snapshot);
+      }
       const result = await createBackendEvidenceRecord({
         investigationId: f.investigationId,
         findingId,
@@ -3261,7 +3076,7 @@ async function promoteFindingToEvidence(findingId){
         sourceType: src?.connectorType || 'connector_output',
         sourceUrl: run?.sourceUrl || '',
         collectionMethod: 'agente_automatico',
-        content: rawString,
+        content: storedContent,
         filename: `finding-${findingId}.json`,
         mimeType: 'application/json'
       });
@@ -3415,205 +3230,23 @@ function showEvidenceDetail(evidenceId){
 // ============================================================
 //          OSINT — Relatório técnico investigativo
 // ============================================================
-async function generateOsintReport(investigationId, skipBilling=false){
-  if (!skipBilling){
-    openCreditConsumptionModal('report_pdf_hash', {
-      module:'reports',
-      reference:`osint-report-${investigationId}`,
-      title:'Confirmar relatório técnico com cadeia de custódia',
-      description:'Gerar relatório técnico com hash, evidências e estrutura investigativa.',
-      onConfirmed: async () => { await generateOsintReport(investigationId, true); }
-    });
+const reportCommands = new Map();
+async function generateOsintReport(investigationId, confirmed=false){
+  if(!confirmed){
+    openCreditConsumptionModal('report_pdf_hash',{description:'Criar um rascunho com os registros salvos desta investigação? A aprovação e o PDF final serão realizados na aba Relatórios.',onConfirmed:()=>generateOsintReport(investigationId,true)});
     return;
   }
-  const inv = dbGet('investigations', investigationId);
-  const cli = dbGet('clients', inv.clientId);
-  const pro = dbGet('processes', inv.processId);
-  const ents = DB.osintEntities.filter(e=>e.investigationId===investigationId);
-  const runs = DB.osintRuns.filter(r=>r.investigationId===investigationId);
-  const finds = DB.osintFindings.filter(f=>f.investigationId===investigationId);
-  const evid = DB.evidence.filter(e=>e.investigationId===investigationId);
-  const events = DB.audit.filter(a=>a.module==='osint' && a.osintMeta?.investigationId===investigationId).sort((a,b)=>a.timestamp-b.timestamp);
-  const rels = DB.osintRelations.filter(r=>r.investigationId===investigationId);
-  const reportBody = {
-    investigationId, generatedAt:new Date().toISOString(),
-    title:inv.title, owner:inv.owner, ents:ents.length, runs:runs.length, finds:finds.length, evid:evid.length
-  };
-  const reportHash = await sha256Hex(JSON.stringify(reportBody));
-  const verificationCode = reportHash.slice(0,12).toUpperCase().match(/.{4}/g).join('-');
-  const now = new Date().toLocaleString('pt-BR');
-
-  const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório OSINT — ${escapeHTML(inv.title)}</title>
-<style>
-body{font-family:'Inter',Arial,sans-serif;color:#000;background:#fff;padding:32px;line-height:1.5}
-h1{font-size:22px;border-bottom:3px double #000;padding-bottom:8px}
-h2{font-size:16px;margin-top:24px;color:#222;border-left:4px solid #00a0b8;padding-left:8px}
-h3{font-size:13px;margin-top:14px;color:#333}
-table{width:100%;border-collapse:collapse;font-size:11px;margin:8px 0}
-th,td{border:1px solid #999;padding:5px;text-align:left;vertical-align:top}
-th{background:#eee}
-.meta{color:#555;font-size:10px;margin-bottom:12px}
-.cover{text-align:center;padding:40px 0;border-bottom:1px solid #ccc;margin-bottom:24px}
-.cover h1{border:none;font-size:28px}
-.manifest{margin-top:24px;padding:14px;background:#f5f5f5;border:1px solid #999;font-family:'Courier New',monospace;font-size:10px;word-break:break-all}
-.warning{background:#fff8dc;border:1px solid #d4a574;padding:10px;margin:14px 0;font-size:11px}
-.footer{position:running(footer);font-size:9px;color:#555;border-top:1px solid #999;padding-top:6px;margin-top:32px}
-@page{size:A4;margin:18mm;@bottom-center{content:"Relatório OSINT — Página " counter(page) " / " counter(pages)}}
-.badge{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;background:#eee;border:1px solid #999;margin:1px}
-</style></head><body>
-
-<div class="cover">
-  <div style="font-size:14px;color:#666;letter-spacing:2px">SEMPER-FI OSINT • DETETIVE VIRTUAL</div>
-  <h1>Relatório Investigativo</h1>
-  <div style="font-size:18px;margin-top:14px">${escapeHTML(inv.title)}</div>
-  <div class="meta">Investigação ${escapeHTML(inv.id)} • Gerado em ${now}</div>
-  <div class="meta">Código de verificação: <strong>${verificationCode}</strong></div>
-</div>
-
-<h2>1. Identificação do caso</h2>
-<table>
-<tr><th>Investigação</th><td>${escapeHTML(inv.id)}</td></tr>
-<tr><th>Título</th><td>${escapeHTML(inv.title)}</td></tr>
-<tr><th>Categoria</th><td>${escapeHTML(OSINT_VOCAB.category[inv.category])}</td></tr>
-<tr><th>Cliente</th><td>${escapeHTML(cli?.name||'—')}</td></tr>
-<tr><th>Processo vinculado</th><td>${escapeHTML(pro?.number||'—')}</td></tr>
-<tr><th>Criada em</th><td>${fmtDateTime(inv.createdAt)}</td></tr>
-<tr><th>Status</th><td>${escapeHTML(OSINT_VOCAB.status[inv.status]?.label||inv.status)}</td></tr>
-</table>
-
-<h2>2. Responsável e equipe</h2>
-<table>
-<tr><th>Responsável</th><td>${escapeHTML(inv.owner)}</td></tr>
-<tr><th>Prioridade</th><td>${escapeHTML(inv.priority||'—')}</td></tr>
-<tr><th>Nível de risco</th><td>${escapeHTML(inv.riskLevel||'—')}</td></tr>
-</table>
-
-<h2>3. Finalidade declarada</h2>
-<p>${escapeHTML(inv.purpose||inv.objective)}</p>
-
-<h2>4. Fundamento jurídico</h2>
-<table>
-<tr><th>Base legal</th><td>${escapeHTML(OSINT_VOCAB.legalBasis[inv.legalBasis]||inv.legalBasis)}</td></tr>
-<tr><th>Autorização/referência</th><td>${escapeHTML(inv.authorizationReference)}</td></tr>
-<tr><th>Avaliação de necessidade e proporcionalidade</th><td>${escapeHTML(inv.legitimateInterestAssessment)}</td></tr>
-<tr><th>Retenção até</th><td>${fmtDate(inv.retentionUntil)}</td></tr>
-</table>
-
-<h2>5. Escopo autorizado</h2>
-<p>${(inv.scope||[]).map(s=>`<span class="badge">${escapeHTML(OSINT_VOCAB.scope[s]||s)}</span>`).join(' ')}</p>
-
-<h2>6. Metodologia</h2>
-<p>Coletas executadas por agentes especializados (Planejador, Coletores Empresarial / Integridade / Judicial / Mercado / Territorial, Preservador de Evidência, Corroborador e Relator), todos vinculados ao escopo aprovado. Cada coleta é registrada em <code>osintRuns</code>; cada interpretação em <code>osintFindings</code>; cada evidência preservada com hash SHA-256 e hash encadeado em <code>evidenceEvents</code>, mantendo integridade verificável.</p>
-
-<h2>7. Fontes consultadas</h2>
-<table><thead><tr><th>Fonte</th><th>Tipo</th><th>Coletas</th><th>Confiança</th></tr></thead><tbody>
-${[...new Set(runs.map(r=>r.connectorId))].map(cid=>{const src=DB.sourceCatalog.find(s=>s.id===cid);const n=runs.filter(r=>r.connectorId===cid).length;return `<tr><td>${escapeHTML(src?.name||cid)}</td><td>${escapeHTML(src?.connectorType||'—')}</td><td>${n}</td><td>${((src?.confidenceWeight||0)*100).toFixed(0)}%</td></tr>`;}).join('') || '<tr><td colspan="4">Nenhuma fonte consultada.</td></tr>'}
-</tbody></table>
-
-<h2>8. Entidades analisadas (${ents.length})</h2>
-<table><thead><tr><th>Tipo</th><th>Nome</th><th>Documento (mascarado)</th><th>Fingerprint</th><th>Status</th></tr></thead><tbody>
-${ents.map(e=>`<tr><td>${escapeHTML(OSINT_VOCAB.entityType[e.entityType]||e.entityType)}</td><td>${escapeHTML(e.displayName)}</td><td>${escapeHTML(e.documentMasked||'—')}</td><td>${escapeHTML(e.documentFingerprint||'—')}</td><td>${escapeHTML(e.verificationStatus)}</td></tr>`).join('') || '<tr><td colspan="5">Nenhuma.</td></tr>'}
-</tbody></table>
-
-<h2>9. Timeline cronológica</h2>
-<table><thead><tr><th>Data/Hora</th><th>Ator</th><th>Ação</th></tr></thead><tbody>
-${events.slice(0,50).map(e=>`<tr><td>${fmtDateTime(e.timestamp)}</td><td>${escapeHTML(e.actor)}</td><td>${escapeHTML(e.action)}</td></tr>`).join('') || '<tr><td colspan="3">Sem eventos.</td></tr>'}
-</tbody></table>
-
-<h2>10. Mapa de vínculos (${rels.length} relações)</h2>
-${rels.length?`<table><thead><tr><th>De</th><th>Para</th><th>Tipo</th><th>Confiança</th><th>Evidências</th><th>Status</th></tr></thead><tbody>${rels.map(r=>{const f=dbGet('osintEntities',r.fromEntityId),t=dbGet('osintEntities',r.toEntityId);return `<tr><td>${escapeHTML(f?.displayName||'—')}</td><td>${escapeHTML(t?.displayName||'—')}</td><td>${escapeHTML(OSINT_VOCAB.relationType[r.relationType]||r.relationType)}</td><td>${((r.confidenceScore||0)*100).toFixed(0)}%</td><td>${r.evidenceIds?.length||0}</td><td>${escapeHTML(r.status)}</td></tr>`;}).join('')}</tbody></table>`:'<p>Nenhuma relação cadastrada.</p>'}
-
-<h2>11. Achados (${finds.length})</h2>
-<table><thead><tr><th>Classificação</th><th>Título</th><th>Confiança</th><th>Validado</th></tr></thead><tbody>
-${finds.map(f=>`<tr><td>${escapeHTML(OSINT_VOCAB.classification[f.classification]?.label||f.classification)}</td><td>${escapeHTML(f.title)}</td><td>${((f.confidenceScore||0)*100).toFixed(0)}%</td><td>${f.humanValidated?'Sim — '+escapeHTML(f.reviewer||''):'Não'}</td></tr>`).join('') || '<tr><td colspan="4">Nenhum achado.</td></tr>'}
-</tbody></table>
-
-<h2>12. Evidências (${evid.length})</h2>
-<table><thead><tr><th>ID</th><th>Fonte</th><th>Data</th><th>SHA-256</th><th>Hash encadeado</th><th>Validação</th></tr></thead><tbody>
-${evid.map(e=>`<tr><td>${escapeHTML(e.id)}</td><td>${escapeHTML(e.sourceName)}</td><td>${fmtDateTime(e.collectedAt)}</td><td style="font-family:monospace;font-size:9px">${escapeHTML(e.sha256.slice(0,24))}...</td><td style="font-family:monospace;font-size:9px">${escapeHTML((e.eventHash||'').slice(0,16))}...</td><td>${escapeHTML(e.validationStatus)}</td></tr>`).join('') || '<tr><td colspan="6">Nenhuma evidência preservada.</td></tr>'}
-</tbody></table>
-
-<h2>13. Limitações e ressalvas</h2>
-<ul>
-<li>Coletas dependem de conectores backend autorizados e revisão humana.</li>
-<li>"Sem resultado" não significa inexistência de informação na fonte.</li>
-<li>Vínculos sem validação humana são tratados como pendentes e não devem ser usados como fato.</li>
-<li>Dados de natureza sensível ou sigilosa não são tratados pelo sistema.</li>
-</ul>
-
-<h2>14. Conclusão técnica</h2>
-<p>Foram realizadas ${runs.length} coleta(s) em ${[...new Set(runs.map(r=>r.connectorId))].length} fonte(s) distintas, resultando em ${finds.length} achado(s), dos quais ${finds.filter(f=>f.humanValidated).length} foi/foram validado(s) por revisor humano. Foram preservadas ${evid.length} evidência(s) com hash SHA-256 e cadeia de eventos.</p>
-
-<h2>15. Recomendações</h2>
-<ul>
-<li>Submeter os achados não validados a revisão humana antes de qualquer ato processual.</li>
-<li>Para evidências relevantes, considerar carimbo do tempo ICP-Brasil para prova de existência temporal.</li>
-<li>Reexecutar a investigação se houver atualização de dados públicos relevantes.</li>
-</ul>
-
-<h2>16. Manifesto de integridade</h2>
-<div class="manifest">
-Investigação: ${escapeHTML(inv.id)}<br>
-Total de evidências: ${evid.length}<br>
-Total de eventos auditados: ${events.length}<br>
-Último hash da cadeia: ${escapeHTML(DB.evidenceEvents[DB.evidenceEvents.length-1]?.currentHash || '(sem cadeia)')}<br>
-Hash do relatório: ${escapeHTML(reportHash)}<br>
-Gerado por: ${escapeHTML(SETTINGS.userName||'')} em ${now}
-</div>
-
-<h2>17. Código de verificação</h2>
-<p style="font-family:monospace;font-size:14px;text-align:center;letter-spacing:3px;padding:12px;background:#f5f5f5;border:1px dashed #999">${verificationCode}</p>
-
-<h2>18. Hash final do documento</h2>
-<p style="font-family:monospace;font-size:10px;word-break:break-all;padding:8px;background:#f5f5f5">${escapeHTML(reportHash)}</p>
-
-<div class="warning">
-<strong>Aviso:</strong> Este relatório organiza dados provenientes de fontes públicas, documentos apresentados e registros técnicos de coleta. Não substitui validação jurídica, contraditório, perícia oficial ou decisão judicial.
-</div>
-
-</body></html>`;
-
-  if (isBackendMode()){
-    try {
-      await backendApi('/reports', {
-        method:'POST',
-        body: JSON.stringify({
-          investigation_id: investigationId,
-          report_type:'investigative',
-          title:`Relatório Investigativo - ${inv.title}`,
-          body:{
-            summary: reportBody,
-            verification_code: verificationCode,
-            report_hash: reportHash,
-            client: cli || null,
-            process: pro || null,
-            entities: ents,
-            runs,
-            findings: finds,
-            evidence: evid,
-            relations: rels,
-            audit_events: events
-          },
-          evidence_ids: evid.map(e=>e.id).filter(looksLikeUuid),
-          purpose:'Geracao de relatorio investigativo versionado no backend',
-          legal_basis: inv.legalBasis || 'legitimo_interesse',
-          authorization_reference: inv.authorizationReference || 'Fluxo autenticado da interface SEMPER-FI'
-        })
-      });
-      await refreshBackendBootstrap();
-    } catch(err){
-      toast(apiErrorMessage(err),'error');
-      return;
-    }
-  }
-
-  const w = window.open('','_blank');
-  if (!w) { toast('O rascunho foi preparado. Permita abrir a janela de impressão e consulte os relatórios registrados na API.', 'warning'); return; }
-  w.opener = null;
-  w.document.write(html); w.document.close();
-  setTimeout(()=>w.print(), 600);
-  osintAudit('geracao_relatorio', investigationId, {reportHash:reportHash.slice(0,16), verificationCode});
-  toast(isBackendMode() ? 'Relatório gerado e versionado no backend' : 'Relatório gerado','success');
+  let command=reportCommands.get(investigationId);
+  if(command?.pending)return;
+  if(!command){command={requestId:crypto.randomUUID()};reportCommands.set(investigationId,command);}
+  command.pending=true;
+  try{
+    const result=await backendApi(`/investigations/${encodeURIComponent(investigationId)}/report-draft`,{method:'POST',body:JSON.stringify({request_id:command.requestId})});
+    if(!result.report_id||!['DRAFT','FINAL'].includes(result.status)||!/^[a-f0-9]{64}$/.test(result.content_hash||''))throw Error('Resposta do relatório inválida.');
+    reportCommands.delete(investigationId);closeModal();navigateSection('reports');
+    toast('Rascunho salvo. Revise o conteúdo na lista antes de aprovar o PDF.','success');
+  }catch(error){toast('Não foi possível confirmar o rascunho. Consulte Relatórios ou tente novamente; a mesma solicitação será retomada.','error');}
+  finally{command.pending=false;}
 }
 // ============================================================
 //          OSINT TOOLS — Conjunto rápido de ferramentas
@@ -3622,14 +3255,14 @@ Gerado por: ${escapeHTML(SETTINGS.userName||'')} em ${now}
 
 const OSINT_TOOLS = [
   {id:'domain', icon:'🌐', name:'Domain Lookup', desc:'DNS, certificados SSL via crt.sh, histórico Wayback', kind:'domain'},
-  {id:'ip', icon:'🖥️', name:'IP Geolocation', desc:'Localização, ISP, ASN, detecção de proxy/VPN', kind:'ip'},
-  {id:'email', icon:'✉️', name:'Email Validation', desc:'Validação MX + detecção de descartável', kind:'email'},
-  {id:'github', icon:'🐙', name:'GitHub Profile', desc:'Perfil público, repositórios, atividade', kind:'github'},
-  {id:'cep', icon:'📍', name:'CEP / Endereço', desc:'BrasilAPI + geocoding via Nominatim', kind:'cep'},
-  {id:'phone', icon:'📱', name:'Phone Validation', desc:'Validação BR (DDD) + internacional', kind:'phone'},
+  {id:'ip', icon:'🖥️', name:'IP Geolocation', desc:'Localização aproximada da rede, ISP e ASN', kind:'ip'},
+  {id:'email', icon:'✉️', name:'Email Validation', desc:'Formato e registros MX, sem confirmar a caixa postal', kind:'email'},
+  {id:'github', icon:'🐙', name:'GitHub Profile', desc:'Perfil público e contagem de repositórios', kind:'github'},
+  {id:'cep', icon:'📍', name:'CEP / Endereço', desc:'Dados de endereço disponíveis na BrasilAPI', kind:'cep'},
+  {id:'phone', icon:'📱', name:'Phone Validation', desc:'Formato brasileiro e DDD, sem confirmar titularidade', kind:'phone'},
   {id:'urlthreat', icon:'⚠️', name:'URL Threat Check', desc:'URLhaus — base de URLs maliciosas', kind:'urlthreat'},
-  {id:'username', icon:'👤', name:'Username Search', desc:'Busca cross-platform (GitHub, GitLab, etc.)', kind:'username'},
-  {id:'headers', icon:'🔍', name:'HTTP Headers', desc:'Análise de headers + tecnologias detectadas', kind:'headers'},
+  {id:'username', icon:'👤', name:'Username Search', desc:'Perfis públicos no GitHub e GitLab', kind:'username'},
+  {id:'headers', icon:'🔍', name:'HTTP Headers', desc:'Cabeçalhos HTTPS públicos de endereço autorizado', kind:'headers'},
   {id:'dns', icon:'📡', name:'DNS Records', desc:'A/MX/NS/TXT via Google DNS-over-HTTPS', kind:'dns'},
   {id:'crt', icon:'🔐', name:'Certificate Transparency', desc:'Subdomínios via crt.sh', kind:'crt'},
   {id:'wayback', icon:'🕰️', name:'Wayback Machine', desc:'Snapshots históricos', kind:'wayback'}
@@ -3644,16 +3277,17 @@ SECTION_RENDERERS.osinttools = () => `
   <div class="panel mb-20">
     <div class="panel-title">Selecione a ferramenta</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">
-      ${OSINT_TOOLS.map(t=>`<div onclick="selectOsintTool('${t.id}')" style="padding:14px;background:var(--obsidian);border-radius:8px;cursor:pointer;border:2px solid ${osintToolsState.selected===t.id?'var(--teal-accent)':'var(--border-color)'};transition:all .15s">
+      ${OSINT_TOOLS.map(t=>`<button type="button" onclick="selectOsintTool('${t.id}')" style="padding:14px;color:var(--text-primary);text-align:left;background:var(--obsidian);border-radius:8px;cursor:pointer;border:2px solid ${osintToolsState.selected===t.id?'var(--teal-accent)':'var(--border-color)'};transition:all .15s">
         <div style="font-size:22px;margin-bottom:6px">${t.icon}</div>
         <div style="font-weight:700;font-size:13px;margin-bottom:4px">${escapeHTML(t.name)}</div>
         <div class="text-muted" style="font-size:11px">${escapeHTML(t.desc)}</div>
-      </div>`).join('')}
+      </button>`).join('')}
     </div>
   </div>
   ${osintToolsState.selected ? renderOsintToolPanel() : ''}
+  <section class="panel mt-20"><h2>Histórico de consultas</h2><p>Execuções registradas no servidor. Abrir ou acompanhar uma execução não repete a consulta.</p><button class="btn btn-secondary" type="button" onclick="loadOsintToolHistory()">Atualizar histórico</button><div id="otHistory"></div></section>
 `;
-SECTION_AFTER.osinttools = () => {};
+SECTION_AFTER.osinttools = () => {loadOsintToolHistory();};
 
 function selectOsintTool(id){ if(osintToolsState.loading || osintToolsState.preserving)return; osintToolsState.selected = id; osintToolsState.lastResult=null; osintToolsState.target=''; osintToolsState.consent=false; renderSection('osinttools'); }
 
@@ -3669,14 +3303,18 @@ function renderOsintToolPanel(){
   return `
     <div class="panel">
       <div class="panel-title">${t.icon} ${escapeHTML(t.name)}</div>
-      <div class="form-group"><label class="form-label">Alvo</label>
+      <div class="form-group"><label class="form-label" for="otTarget">Alvo</label>
         <input class="form-input" id="otTarget" value="${escapeHTML(osintToolsState.target || '')}" placeholder="${placeholders[t.kind]||''}">
       </div>
+      <div class="form-group"><label class="form-label" for="otPurpose">Finalidade *</label><textarea class="form-textarea" id="otPurpose" minlength="10" maxlength="4000">${escapeHTML(osintToolsState.purpose||'')}</textarea></div>
+      <div class="form-group"><label class="form-label" for="otBasis">Base legal *</label><select class="form-select" id="otBasis">${['contrato','legitimo_interesse','obrigacao_legal','consentimento'].map(value=>`<option value="${value}" ${value===(osintToolsState.legalBasis||'contrato')?'selected':''}>${escapeHTML(OSINT_VOCAB.legalBasis[value]||value.replaceAll('_',' '))}</option>`).join('')}</select></div>
+      <div class="form-group"><label class="form-label" for="otReference">Referência de autorização *</label><input class="form-input" id="otReference" maxlength="255" value="${escapeHTML(osintToolsState.authorizationReference||'')}"></div>
+      <div class="form-group"><label class="form-label" for="otInvestigation">Investigação vinculada</label><select class="form-select" id="otInvestigation"><option value="">Sem vínculo</option>${DB.investigations.filter(item=>!['deleted','arquivada','bloqueada'].includes(item.status)).map(item=>`<option value="${escapeHTML(item.id)}" ${item.id===osintToolsState.investigationId?'selected':''}>${escapeHTML(item.title)}</option>`).join('')}</select></div>
       <div class="form-group"><label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text-secondary);cursor:pointer">
-        <input type="checkbox" id="otConsent" ${osintToolsState.consent ? 'checked' : ''}> Declaro finalidade legítima para a consulta
+        <input type="checkbox" id="otConsent" ${osintToolsState.consent ? 'checked' : ''}> Confirmo finalidade legítima e autorização para consultar o alvo; consultas de rede têm escopo defensivo.
       </label></div>
       <button class="btn btn-primary" onclick="runOsintTool()" ${osintToolsState.loading?'disabled':''}>${osintToolsState.loading?'<span class="spinner"></span> Consultando...':'Executar'}</button>
-      <div id="otResult" class="mt-20">${osintToolsState.lastResult?renderOsintToolResult():''}</div>
+      <p id="otProgress" role="status">${osintToolsState.loading?'Acompanhando consulta registrada no servidor…':''}</p><div id="otResult" class="mt-20">${osintToolsState.lastResult?renderOsintToolResult():''}</div>
     </div>
   `;
 }
@@ -3686,123 +3324,70 @@ async function runOsintTool(){
   const t = OSINT_TOOLS.find(x=>x.id===osintToolsState.selected);
   const val = document.getElementById('otTarget').value.trim();
   const consent = document.getElementById('otConsent').checked;
+  osintToolsState.purpose=document.getElementById('otPurpose').value.trim();
+  osintToolsState.legalBasis=document.getElementById('otBasis').value;
+  osintToolsState.authorizationReference=document.getElementById('otReference').value.trim();
+  osintToolsState.investigationId=document.getElementById('otInvestigation').value;
+  if(osintToolsState.purpose.length<10||osintToolsState.authorizationReference.length<3){toast('Informe a finalidade e a referência de autorização.','error');return;}
   if (!val){ toast('Informe o alvo','error'); return; }
   if (!consent){ toast('Marque a declaração','error'); return; }
   osintToolsState.target=val; osintToolsState.consent=consent;
   osintToolsState.loading = true; osintToolsState.lastResult=null; renderSection('osinttools');
   try {
     const result = await dispatchOsintTool(t.kind, val);
-    osintToolsState.lastResult = { tool:t, target:val, data:result, at:Date.now(), ok:true };
-    audit('osinttools', t.kind, val, result.partial ? 'parcial' : 'sucesso');
-    toast(result.partial ? 'Consulta parcial. Confira as fontes que não responderam.' : 'Consulta concluída', result.partial ? 'warning' : 'success');
+    osintToolsState.lastResult = acceptOsintToolResult(result);
+    toast(osintToolsState.lastResult.data.partial ? 'Consulta parcial. Confira as limitações.' : 'Consulta concluída e registrada.', osintToolsState.lastResult.data.partial ? 'warning' : 'success');
   } catch(e){
-    osintToolsState.lastResult = { tool:t, target:val, error:e.message, at:Date.now(), ok:false };
+    osintToolsState.lastResult = { tool:t, target:val, error:e.serverCode==='ProviderNotConfigured'?'A fonte aguarda configuração da credencial pelo administrador.':'Não foi possível concluir o acompanhamento. Consulte o histórico antes de iniciar outra consulta.', ok:false };
     audit('osinttools', t.kind, val, 'erro');
-    toast('Erro: '+e.message,'error');
+    toast(osintToolsState.lastResult.error,'error');
   }
   osintToolsState.loading = false;
   if (appState.currentSection === 'osinttools') renderSection('osinttools');
 }
 
-async function dispatchOsintTool(kind, value){
-  const request = (url, opts={}) => fetch(url, {...opts,signal:AbortSignal.timeout(15000)});
-  const j = async (url, opts) => { const r = await request(url, opts); if(!r.ok) throw new Error('A fonte não conseguiu concluir a consulta. Tente novamente mais tarde.'); return r.json(); };
-  switch(kind){
-    case 'dns': case 'domain': {
-      const types = ['A','AAAA','MX','NS','TXT','CNAME','SOA'];
-      const out = {}, unavailable = [];
-      let answered = 0;
-      for (const type of types){
-        try {
-          const d = await j(`https://dns.google/resolve?name=${encodeURIComponent(value)}&type=${type}`);
-          if (![0,3].includes(d.Status)) throw new Error('DNS indisponível');
-          out[type] = (d.Answer||[]).map(a=>a.data); answered++;
-        } catch(_){ unavailable.push(type); }
-      }
-      if (!answered) throw new Error('Não foi possível consultar os registros DNS. Nenhum resultado foi confirmado.');
-      if (kind==='domain'){
-        try { const cert = await j(`https://crt.sh/?q=${encodeURIComponent(value)}&output=json`); out.certificates = (cert||[]).slice(0,10); } catch(_){ unavailable.push('Certificados'); }
-        try { const wb = await j(`https://archive.org/wayback/available?url=${encodeURIComponent(value)}`); out.wayback = wb; } catch(_){ unavailable.push('Arquivo histórico'); }
-      }
-      if (unavailable.length) { out.partial = true; out.limitations = [`Não foi possível consultar: ${unavailable.join(', ')}. Ausência de resposta não significa ausência de registros.`]; }
-      return out;
-    }
-    case 'ip': {
-      const data = await j(`https://ip-api.com/json/${encodeURIComponent(value)}?fields=66846719`);
-      if (data.status === 'fail') throw new Error('A fonte não confirmou informações para este endereço IP.');
-      return data;
-    }
-    case 'email': return await j(`https://api.eva.pingutil.com/email?email=${encodeURIComponent(value)}`);
-    case 'github': return await j(`https://api.github.com/users/${encodeURIComponent(value)}`);
-    case 'cep': {
-      const cep = value.replace(/\D/g,'');
-      const data = await j(`https://brasilapi.com.br/api/cep/v2/${cep}`);
-      if (data.street){
-        try { const geo = await j(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(data.street+', '+data.city+', '+data.state)}&format=json&limit=1`); data.geo = geo[0]; } catch(_){}
-      }
-      return data;
-    }
-    case 'phone': {
-      const clean = value.replace(/\D/g,'');
-      const ddd = clean.length>=10 ? clean.slice(clean.startsWith('55')?2:0, clean.startsWith('55')?4:2) : null;
-      const out = { input: value, normalized: clean, ddd, valid_format: /^\d{10,13}$/.test(clean) };
-      if (ddd){ try { out.ddd_data = await j(`https://brasilapi.com.br/api/ddd/v1/${ddd}`); } catch(_){} }
-      return out;
-    }
-    case 'urlthreat': {
-      const fd = new FormData(); fd.append('url', value);
-      const data = await j('https://urlhaus-api.abuse.ch/v1/url/', {method:'POST', body:fd});
-      if (!['ok','no_results'].includes(data.query_status)) throw new Error('A fonte não confirmou a verificação desta URL.');
-      return data;
-    }
-    case 'username': {
-      const sites = [
-        {name:'GitHub', url:`https://api.github.com/users/${encodeURIComponent(value)}`},
-        {name:'GitLab', url:`https://gitlab.com/api/v4/users?username=${encodeURIComponent(value)}`}
-      ];
-      const out = {};
-      let answered = 0;
-      const unavailable = [];
-      for (const s of sites){
-        try {
-          const r = await request(s.url);
-          if (r.status === 404) { out[s.name] = {found:false}; answered++; continue; }
-          if (!r.ok) throw new Error('Fonte indisponível');
-          const data = await r.json();
-          if (s.name === 'GitLab' && !Array.isArray(data)) throw new Error('Resposta inválida');
-          out[s.name] = {found:s.name === 'GitLab' ? data.some(user=>String(user.username||'').toLowerCase()===value.toLowerCase()) : Boolean(data.login)};
-          answered++;
-        } catch(_){ unavailable.push(s.name); }
-      }
-      if (!answered) throw new Error('As fontes não responderam. Nenhum perfil foi confirmado.');
-      if (unavailable.length) { out.partial = true; out.limitations = [`Fontes indisponíveis: ${unavailable.join(', ')}.`]; }
-      const username = encodeURIComponent(value);
-      out.manual_check = [
-        `https://twitter.com/${username}`, `https://instagram.com/${username}`,
-        `https://reddit.com/user/${username}`, `https://linkedin.com/in/${username}`,
-        `https://gitlab.com/${username}`, `https://keybase.io/${username}`
-      ];
-      return out;
-    }
-    case 'headers': {
-      // CORS pode bloquear — fallback: instruções manuais
-      try {
-        const r = await request(value, {method:'HEAD', mode:'cors'});
-        const h = {}; r.headers.forEach((v,k)=>h[k]=v);
-        return { status:r.status, headers:h };
-      } catch(e){ throw new Error('Este site não permite a consulta pelo navegador. Solicite a verificação ao administrador.'); }
-    }
-    case 'crt': {
-      const data = await j(`https://crt.sh/?q=${encodeURIComponent(value)}&output=json`);
-      const subs = new Set();
-      (data||[]).forEach(c=>(c.name_value||'').split(/\n/).forEach(n=>n.trim()&&subs.add(n.trim().toLowerCase())));
-      return { total_certs: data.length, unique_subdomains: [...subs].sort(), sample: (data||[]).slice(0,5) };
-    }
-    case 'wayback': return await j(`https://archive.org/wayback/available?url=${encodeURIComponent(value)}`);
-    default: throw new Error('Ferramenta não implementada');
-  }
+async function dispatchOsintTool(kind,value){
+  return window.SemperfiConnectorJobs.run(backendApi,{
+    connector_id:'osint_tools',investigation_id:osintToolsState.investigationId||null,
+    payload:{tool:kind,value,authorized:osintToolsState.consent===true},
+    purpose:osintToolsState.purpose,legal_basis:osintToolsState.legalBasis,
+    authorization_reference:osintToolsState.authorizationReference,
+    scope_codes:['digital_defensive'],risk_level:'low'
+  },{onProgress(progress){osintToolsState.runId=progress.runId;const el=document.getElementById('otProgress');if(el)el.textContent=progress.status==='submitting'?'Enviando consulta…':progress.status==='queued'?'Consulta registrada; aguardando execução.':'Acompanhando consulta…';}});
 }
-
+function acceptOsintToolResult(response){
+  const data=response.raw_snapshot;
+  if(response.connector_id!=='osint_tools'||response.status!=='completed'||!data||!data.tool||!OSINT_TOOLS.some(tool=>tool.id===data.tool)||!data.data)throw Error('Resultado de consulta inválido.');
+  return {runId:response.id||response.run_id,tool:OSINT_TOOLS.find(tool=>tool.id===data.tool),target:data.target,data,at:response.created_at,investigationId:response.investigation_id,ok:true};
+}
+async function openOsintToolRun(id){
+  if(osintToolsState.loading||osintToolsState.preserving)return;
+  osintToolsState.loading=true;
+  try{
+    const result=await window.SemperfiConnectorJobs.resume(backendApi,id);
+    osintToolsState.lastResult=acceptOsintToolResult(result);osintToolsState.selected=osintToolsState.lastResult.tool.id;
+    osintToolsState.target=osintToolsState.lastResult.target;osintToolsState.investigationId=result.investigation_id||'';
+    osintToolsState.purpose=result.purpose||'';osintToolsState.legalBasis=result.legal_basis||'contrato';osintToolsState.authorizationReference='';osintToolsState.consent=false;
+  }catch(error){osintToolsState.lastResult={ok:false,error:'A consulta não foi concluída. Confira a configuração da fonte e a fila de processamento antes de iniciar outra consulta.'};}
+  finally{osintToolsState.loading=false;if(appState.currentSection==='osinttools')renderSection('osinttools');}
+}
+async function loadOsintToolHistory(){
+  const container=document.getElementById('otHistory');if(!container)return;
+  const ticket={};osintToolsState.historyRequest=ticket;
+  container.innerHTML='<p role="status">Consultando histórico salvo…</p>';
+  const offset=osintToolsState.historyOffset||0;
+  try{
+    const rows=await backendApi(`/osint/runs?connector_id=osint_tools&limit=20&offset=${offset}`,{cache:'no-store'});
+    if(!container.isConnected||osintToolsState.historyRequest!==ticket)return;
+    if(!Array.isArray(rows))throw Error('Histórico inválido.');
+    const statuses={queued:'Aguardando execução',running:'Em execução',completed:'Concluída',failed:'Falhou'};
+    container.innerHTML=rows.length?rows.map(row=>`<article class="panel mt-12"><h3>${escapeHTML(OSINT_TOOLS.find(tool=>tool.id===row.tool)?.name||'Consulta registrada')}</h3><p>${escapeHTML(row.purpose)} · ${escapeHTML(fmtDateTime(row.created_at))} · ${escapeHTML(statuses[row.status]||'Situação indisponível')}</p><button type="button" class="btn btn-secondary" data-tool-run="${escapeHTML(row.id)}">${row.status==='completed'?'Abrir resultado':'Acompanhar execução'}</button></article>`).join(''):'<p>Nenhuma consulta nesta página do histórico.</p>';
+    container.innerHTML+=`<div class="filter-bar mt-12"><button type="button" class="btn btn-secondary" data-history-prev ${offset===0?'disabled':''}>Mais recentes</button><button type="button" class="btn btn-secondary" data-history-next ${rows.length<20?'disabled':''}>Mais antigas</button></div>`;
+    container.querySelectorAll('[data-tool-run]').forEach(button=>button.onclick=()=>openOsintToolRun(button.dataset.toolRun));
+    container.querySelector('[data-history-prev]').onclick=()=>{osintToolsState.historyOffset=Math.max(0,offset-20);loadOsintToolHistory();};
+    container.querySelector('[data-history-next]').onclick=()=>{osintToolsState.historyOffset=offset+20;loadOsintToolHistory();};
+  }catch(error){if(container.isConnected){container.innerHTML='<p role="alert">Não foi possível consultar o histórico.</p><button type="button" class="btn btn-secondary">Tentar novamente</button>';container.querySelector('button').onclick=loadOsintToolHistory;}}
+}
 function renderOsintToolResult(){
   const r = osintToolsState.lastResult;
   if (!r.ok) return `<div class="alert alert-danger"><span>✕</span><span>${escapeHTML(apiErrorMessage(r.error))}</span></div>`;
@@ -3819,12 +3404,14 @@ function renderOsintToolResult(){
 async function preserveOsintResult(){
   const r = osintToolsState.lastResult;
   if (!r?.ok || osintToolsState.preserving || r.preserved) return;
-  const content = JSON.stringify(r.data);
   if (isBackendMode()){
     osintToolsState.preserving = true; renderSection('osinttools');
     try {
+      const source=await backendApi(`/osint/runs/${encodeURIComponent(r.runId)}`,{cache:'no-store'});
+      if(source.status!=='completed'||source.raw_snapshot==null)throw Error('O resultado salvo da consulta não está disponível.');
+      const content=JSON.stringify(source.raw_snapshot);
       const result = await createBackendEvidenceRecord({
-        investigationId: null,
+        investigationId: source.investigation_id || null,
         sourceName: `${r.tool.name} - ${r.target}`,
         sourceType: 'tool_result',
         sourceUrl: '',
@@ -5065,7 +4652,7 @@ async function startWorkspace(){
     renderSidebar(); renderSection(appState.currentSection); renderNotifications(); renderTopbarMeters();
     document.body.classList.remove('auth-pending');
     document.dispatchEvent(new Event('semperfi:ready'));
-    setInterval(renderNotifications, 60000);
+    setInterval(()=>{if(!document.hidden)renderNotifications();}, 60000);
   } catch(error) {
     document.getElementById('authStatus').textContent = apiErrorMessage(error);
     const retry = document.getElementById('authRetry');

@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime, time
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -158,6 +158,7 @@ class IntimationLaunch(BaseModel):
 
 
 class InvestigationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     title: str
     category: str
     objective: str = Field(min_length=50)
@@ -171,9 +172,21 @@ class InvestigationCreate(BaseModel):
     hypothesis: str | None = None
     scope_codes: list[str] = Field(min_length=1)
     retention_until: datetime | None = None
+    operational_owner: str | None = Field(default=None, max_length=160)
+    priority: Literal["low", "medium", "high", "critical"] = "medium"
+    deadline: date | None = None
+    questions: list[Annotated[str, Field(min_length=1, max_length=1000)]] = Field(default_factory=list, max_length=50)
+    expected_result: str | None = Field(default=None, max_length=4000)
+
+    @field_validator("priority", mode="before")
+    @classmethod
+    def normalize_priority(cls, value):
+        aliases = {"baixa": "low", "media": "medium", "alta": "high", "critica": "critical"}
+        return aliases.get(value, value) if isinstance(value, str) else value
 
 
 class InvestigationStatusUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     status: str = Field(min_length=3, max_length=64)
 
 
@@ -184,9 +197,11 @@ class EntityIdentifierCreate(BaseModel):
 
 
 class EntityCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     entity_type: Literal["person", "company", "process", "domain", "address", "phone", "bank", "document", "web_page", "municipality"]
     display_name: str
     normalized_name: str | None = None
+    aliases: list[Annotated[str, Field(min_length=1, max_length=255)]] = Field(default_factory=list, max_length=30)
     identifiers: list[EntityIdentifierCreate] = Field(default_factory=list, max_length=30)
     verification_status: str = "preliminary"
     confidence: float = Field(default=0.0, ge=0, le=1)
@@ -202,8 +217,10 @@ class RelationCreate(BaseModel):
 
 
 class FindingCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     entity_id: uuid.UUID | None = None
     evidence_id: uuid.UUID | None = None
+    connector_run_id: uuid.UUID | None = None
     classification: str = "dado_bruto"
     title: str = Field(min_length=3, max_length=255)
     statement: str = Field(min_length=3)
@@ -217,6 +234,7 @@ class FindingCreate(BaseModel):
 
 
 class FindingUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     classification: str | None = Field(default=None, min_length=3, max_length=48)
     evidence_id: uuid.UUID | None = None
     human_validated: bool | None = None
@@ -227,7 +245,7 @@ class FindingUpdate(BaseModel):
 class ConnectorRunCreate(BaseModel):
     investigation_id: uuid.UUID | None = None
     target_entity_id: uuid.UUID | None = None
-    connector_id: Literal["brasilapi", "transparency", "datajud", "rdap_dns"]
+    connector_id: Literal["brasilapi", "transparency", "datajud", "rdap_dns", "osint_tools"]
     payload: dict[str, Any]
     purpose: str = Field(min_length=10)
     legal_basis: str

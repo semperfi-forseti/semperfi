@@ -65,6 +65,7 @@ class Settings(BaseSettings):
 
     transparency_api_key: str | None = None
     datajud_api_key: str | None = None
+    urlhaus_auth_key: str | None = None
     datajud_base_url: str = "https://api-publica.datajud.cnj.jus.br"
     brasil_api_base_url: str = "https://brasilapi.com.br/api"
     max_upload_bytes: int = 52_428_800

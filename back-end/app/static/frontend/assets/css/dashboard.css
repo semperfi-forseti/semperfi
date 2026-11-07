@@ -1,0 +1,30 @@
+#dashboardPanel .kpi-card{font:inherit;text-align:left;color:var(--text-primary);min-width:0;width:100%}
+#dashboardPanel .kpi-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+#dashboardPanel .kpi-card>span{display:block;overflow-wrap:anywhere}
+#dashboardPanel .kpi-value{font-size:clamp(1.25rem,2vw,1.875rem)}
+#dashboardPanel .dashboard-attention{border-color:var(--danger)}
+.dashboard-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:12px 0 20px}
+.dashboard-toolbar p{color:var(--text-secondary);font-size:.8125rem}
+.dashboard-period{margin:18px 0;max-width:100%}
+.dashboard-period input{max-width:240px;margin:8px 0}
+.dashboard-period p,#dashboardPanel .text-muted{font-size:.8125rem;line-height:1.5}
+#dashboardPanel .grid-2x2{grid-template-columns:repeat(2,minmax(0,1fr))}
+#dashboardPanel .panel{min-width:0}
+#dashboardPanel .panel-title{font-size:1rem}
+.dashboard-alert{padding:12px;margin:12px 0;background:var(--obsidian);border-left:3px solid var(--warning);border-radius:6px;overflow-wrap:anywhere}
+.dashboard-alert h3{font-size:.875rem;margin-bottom:6px}
+.dashboard-alert p{margin:6px 0}
+#dashboardPanel .calendar-date{color:var(--text-primary);font:inherit;border:0;background:transparent;min-height:36px;min-width:0;padding:3px;cursor:pointer}
+#dashboardPanel .calendar-date.today{background:var(--teal-accent);color:var(--on-accent,#001017)}
+#dashboardPanel .calendar-header strong{text-align:center;overflow-wrap:anywhere}
+#dashboardPanel .calendar-days{gap:0}
+#dashboardPanel .calendar-day{font-size:.6875rem;padding:4px 0}
+#dashboardPanel .detail-row{flex-wrap:wrap;gap:8px}
+#dashboardStatus{margin:8px 0;min-height:1.5em}
+#dashboardStatus[role=alert]{padding:12px;border-left:3px solid var(--warning);background:var(--obsidian-light)}
+#notifList .notif-item{display:block;width:100%;text-align:left;font:inherit;color:var(--text-primary);background:transparent;border:0;border-bottom:1px solid var(--border-color);cursor:pointer;overflow-wrap:anywhere}
+#notifList .notif-item>span{display:block}
+#notifList .notif-item:hover{background:var(--obsidian-light)}
+#notifList .notif-summary{padding:12px}
+@media(max-width:900px){#dashboardPanel .grid-2x2{grid-template-columns:minmax(0,1fr)}#dashboardPanel .kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:480px){#dashboardPanel .kpi-grid{grid-template-columns:minmax(0,1fr)}#dashboardPanel .calendar-date{min-height:34px}.dashboard-toolbar>*{max-width:100%}}

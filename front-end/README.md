@@ -268,11 +268,11 @@ Na revisão de 30/09/2026 passaram **69 testes Node, 23 cenários funcionais de 
 
 **Critério: funcionamento comprovado de cada fluxo das 21 abas.** Uma aba só recebe aceite completo após validar entradas, gravação/leitura posterior, permissões, falhas, apresentação acessível e dependências reais no ambiente de homologação. Ações escondidas, quantidade de arquivos e número de testes não representam percentual de conclusão funcional.
 
-### Evidências e pendências por aba — revisão de 30/09/2026
+### Evidências e pendências por aba — atualização acumulada até 03/10/2026
 
 | Aba | Evidência disponível | O que ainda impede o aceite completo |
 | --- | --- | --- |
-| Visão Geral | Navegação e dados do bootstrap sem seed; conteúdo não confiável escapado | Conferência dos indicadores com cenários completos e carga |
+| Visão Geral | Indicadores, alertas e calendário consultam `/v1/dashboard`; testes com banco isolado populado, períodos, vencidos, cancelados e falhas | Carga e concorrência em PostgreSQL no destino; definir datas financeiras de vencimento e pagamento |
 | Clientes | Cadastro, perfil complementar, conflito de versão, permissões e vínculos de documentos testados | Homologação de casos profissionais, concorrência PostgreSQL e documentos no cofre real |
 | Processos | Cadastro/edição, andamentos, vínculos de documentos e proteção das dependências | Monitoramento automático e homologação do cofre real |
 | Agenda | Criar/editar/excluir pela tela, recarregar, estado concluído e vínculo automático de cliente | Homologação de permissões, agenda e uso concorrente no destino |
@@ -330,3 +330,23 @@ O convite é compartilhado manualmente pelo administrador: não há alegação d
 **Infraestrutura:** continuam pendentes a homologação HTTPS/webhook do Asaas Sandbox, o modelo/serviço Ollama e o funcionamento completo de filas, PostgreSQL/RLS e cofre. Portas abertas e health checks não comprovam esses fluxos.
 
 **Ordem de continuidade:** completar persistência e integração dos fluxos da matriz; configurar e homologar serviços reais; executar o aceite de cada aba, incluindo permissões, acessibilidade, falhas e restauração. Os testes de navegador estão declarados em `package.json`, com versões fixadas de Playwright/axe-core e execução incluída na integração contínua.
+
+### Dashboard conectado ao banco — 02/10/2026
+
+`assets/js/dashboard.js` apresenta as projeções autenticadas da API. `app.js` integra o módulo e consulta os avisos do cabeçalho na mesma origem. Os totais do painel não usam `DB`, `localStorage`, inspeções temporárias nem o limite de 500 linhas do bootstrap de auditoria.
+
+- Processos ativos/críticos; prazos pendentes vencidos e até sete dias à frente; compromissos de hoje sem cancelados; intimações recebidas/em triagem.
+- Arquivos armazenados exigem preservação confirmada e referência versionada no banco. Registros ainda não preservados aparecem separadamente. Esse contador não substitui a verificação física do cofre.
+- Resumo financeiro filtrado por mês, com recebimentos, pagamentos e saldo. Receitas e despesas vencidas ficam separadas. Valores previstos/vencidos de todos os períodos estão identificados.
+- O período financeiro usa **data do lançamento**; o cadastro atual não possui data de pagamento nem data de vencimento financeira. Uma data de lançamento passada não torna a conta vencida: a situação precisa estar registrada como vencida. Essa definição está visível na tela, sem presumir fluxo de caixa efetivo.
+- Calendário por mês, detalhes do dia e lista completa de alertas com paginação. Botões operáveis por teclado, modos claro/escuro e apresentação móvel.
+- Consulta nova ao entrar na aba, atualização manual e automática enquanto visível. O horário da consulta vem do servidor. Falha inicial não mostra zeros; falha de atualização identifica os dados antigos; perda de permissão remove os indicadores.
+- Abrir Processos, Prazos, Agenda, Intimações ou Financeiro pelos cartões/avisos consulta novamente os registros antes de exibir a lista. Falha dessa consulta mantém a tela atual com orientação; resposta atrasada não troca a aba se a pessoa já navegou para outra seção.
+
+As respostas ficam apenas em memória para apresentação da consulta atual. Preferências visuais continuam locais. Os testes populam exclusivamente bancos descartáveis em `back-end/var/test`; nenhum cadastro fictício é inserido no banco operacional. Esta alteração não exige migration.
+
+Os auxiliares antigos `audit()` e `osintAudit()` deixaram de fabricar eventos no navegador. As operações autenticadas continuam auditadas pelo servidor. A timeline da investigação consulta a API ao abrir/atualizar, ordena datas ISO corretamente e identifica o recorte dos últimos 500 eventos da organização; falha de consulta não é apresentada como ausência de histórico.
+
+**Pendências encontradas fora do dashboard:** execução/persistência das OSINT Tools; campos complementares de investigação e aliases ainda não suportados pelo contrato; vínculo persistido entre achado e coleta para preservar o resultado completo após recarga; alinhamento do relatório investigativo local com o rascunho, hash e PDF oficiais do backend. Esses fluxos precisam de correção antes do aceite da aplicação inteira, mesmo com o dashboard validado.
+
+**Validação concluída em 03/10/2026:** 510 testes Python (38 específicos do dashboard), 69 testes Node, 50 cenários/grupos de navegador com respostas controladas (25 funcionais, sete de recuperação, cinco de perfil e 13 do dashboard) e 12 grupos com navegador → FastAPI → SQLite reais. Não houve erro JavaScript nos testes de navegador. Acessibilidade automatizada do dashboard passou nos temas claro/escuro a 320 px; validação manual com tecnologias assistivas permanece necessária. Sintaxe/UTF-8/charset aprovados em 70 arquivos e 50 arquivos de distribuição sincronizados. O servidor local serve os novos módulos e expõe as três rotas; consulta anônima pelo proxy retorna 401. PostgreSQL foi verificado por compilação SQL, sem homologação funcional nesse banco.

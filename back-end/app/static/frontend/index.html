@@ -15,6 +15,7 @@
 <link rel="stylesheet" href="assets/css/commercial.css">
 <link rel="stylesheet" href="assets/css/themes.css">
 <link rel="stylesheet" href="assets/css/accessibility.css">
+<link rel="stylesheet" href="assets/css/dashboard.css">
 <script src="assets/js/commercial.js" defer></script>
 <script src="assets/js/legal-forms.js" defer></script>
 <script src="assets/js/connector-jobs.js" defer></script>
@@ -27,6 +28,7 @@
 <script src="assets/js/legal-documents.js" defer></script>
 <script src="assets/js/organization-view.js" defer></script>
 <script src="assets/js/investigation-engines.js" defer></script>
+<script src="assets/js/dashboard.js" defer></script>
 <script src="assets/js/auth.js" defer></script>
 </head>
 <body class="auth-pending" data-page="app">
@@ -53,7 +55,7 @@
       <span class="demo-badge" title="FORSETI Technologies ® · CNPJ 66.603.219/0001-93 — Aprovado por ABDCRIM ® · CNPJ 55.739.503/0001-75">FORSETI · ABDCRIM</span>
       <button class="icon-btn" id="maskToggle" title="Alternar mascaramento de dados sensíveis" aria-label="Mascarar dados sensíveis" aria-pressed="true">👁</button>
       <div style="position:relative">
-        <button class="icon-btn" id="notificationBtn" title="Notificações" aria-label="Notificações" aria-controls="notifPanel" aria-expanded="false">🔔<span class="notification-badge" id="notifBadge">0</span></button>
+        <button class="icon-btn" id="notificationBtn" title="Notificações" aria-label="Notificações" aria-controls="notifPanel" aria-expanded="false">🔔<span class="notification-badge" id="notifBadge" style="display:none" aria-hidden="true"></span></button>
         <div class="notif-panel" id="notifPanel">
           <div class="notif-header"><strong>Notificações</strong><button class="btn-link" id="clearNotifs" type="button">Fechar</button></div>
           <div class="notif-list" id="notifList"></div>

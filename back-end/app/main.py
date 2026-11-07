@@ -16,10 +16,12 @@ from app.api.v1 import (
     auth_routes,
     billing,
     client_profiles,
+    dashboard,
     engines,
     evidence,
     frontend,
     investigations,
+    investigation_reports,
     legal,
     legal_documents,
     legal_extra,
@@ -131,5 +133,5 @@ async def root():
     return JSONResponse(status_code=404, content={"detail": "Frontend não encontrado. Execute npm run sync:backend no frontend."})
 
 
-for router in (auth_routes.router, legal.router, legal_extra.router, client_profiles.router, legal_documents.router, investigations.router, engines.router, evidence.router, reports.router, audit.router, frontend.router, billing.router, organization.router):
+for router in (auth_routes.router, legal.router, legal_extra.router, client_profiles.router, legal_documents.router, investigations.router, investigation_reports.router, engines.router, evidence.router, reports.router, audit.router, frontend.router, billing.router, organization.router, dashboard.router):
     app.include_router(router, prefix=settings.api_v1_prefix)

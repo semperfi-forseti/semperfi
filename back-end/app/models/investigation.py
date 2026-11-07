@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, String, Text, Uuid
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, String, Text, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin, UUIDMixin
@@ -15,6 +15,11 @@ class Investigation(Base, UUIDMixin, TimestampMixin):
     client_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("clients.id"), nullable=True)
     process_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("processes.id"), nullable=True)
     owner_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    operational_owner: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    priority: Mapped[str] = mapped_column(String(16), nullable=False, default="medium", server_default="medium")
+    deadline: Mapped[date | None] = mapped_column(Date, nullable=True)
+    questions: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list, server_default=text("'[]'"))
+    expected_result: Mapped[str | None] = mapped_column(Text, nullable=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     category: Mapped[str] = mapped_column(String(80), nullable=False)
     objective: Mapped[str] = mapped_column(Text, nullable=False)
@@ -42,6 +47,7 @@ class Entity(Base, UUIDMixin, TimestampMixin):
     entity_type: Mapped[str] = mapped_column(String(64), nullable=False)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
     normalized_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    aliases: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list, server_default=text("'[]'"))
     verification_status: Mapped[str] = mapped_column(String(32), nullable=False, default="preliminary")
     confidence: Mapped[float] = mapped_column(nullable=False, default=0.0)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -93,6 +99,7 @@ class Finding(Base, UUIDMixin, TimestampMixin):
     investigation_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("investigations.id"), nullable=False, index=True)
     entity_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("entities.id"), nullable=True)
     evidence_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("evidences.id"), nullable=True)
+    connector_run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("connector_runs.id", name="fk_findings_connector_run_id"), nullable=True, index=True)
     classification: Mapped[str] = mapped_column(String(48), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     statement: Mapped[str] = mapped_column(Text, nullable=False)

@@ -138,10 +138,10 @@ async def frontend_bootstrap(request: Request, session: AsyncSession = Depends(g
 
     investigation_ids = [item.id for item in investigations]
     scopes = list((await session.scalars(select(InvestigationScope).where(InvestigationScope.investigation_id.in_(investigation_ids) if investigation_ids else False))).all()) if investigation_ids else []
-    entities = list((await session.scalars(select(Entity).where(Entity.investigation_id.in_(investigation_ids), Entity.verification_status != "deleted"))).all()) if investigation_ids else []
+    entities = list((await session.scalars(select(Entity).where(Entity.tenant_id == principal.tenant_id, Entity.investigation_id.in_(investigation_ids), Entity.verification_status != "deleted"))).all()) if investigation_ids else []
     entity_ids = [item.id for item in entities]
     identifiers = list((await session.scalars(select(EntityIdentifier).where(EntityIdentifier.entity_id.in_(entity_ids) if entity_ids else False))).all()) if entity_ids else []
-    relations = list((await session.scalars(select(EntityRelation).where(EntityRelation.investigation_id.in_(investigation_ids) if investigation_ids else False))).all()) if investigation_ids else []
+    relations = list((await session.scalars(select(EntityRelation).where(EntityRelation.tenant_id == principal.tenant_id, EntityRelation.investigation_id.in_(investigation_ids), EntityRelation.source_entity_id.in_(entity_ids), EntityRelation.target_entity_id.in_(entity_ids)))).all()) if entity_ids else []
     runs = list((await session.scalars(select(ConnectorRun).where(ConnectorRun.tenant_id == principal.tenant_id, ConnectorRun.investigation_id.in_(investigation_ids) if investigation_ids else False).order_by(ConnectorRun.created_at.desc()))).all()) if investigation_ids else []
     findings = list((await session.scalars(select(Finding).where(Finding.tenant_id == principal.tenant_id, Finding.investigation_id.in_(investigation_ids) if investigation_ids else False).order_by(Finding.created_at.desc()))).all()) if investigation_ids else []
     evidences = list((await session.scalars(select(Evidence).where(Evidence.tenant_id == principal.tenant_id).order_by(Evidence.collected_at.desc()))).all())
@@ -347,13 +347,15 @@ async def frontend_bootstrap(request: Request, session: AsyncSession = Depends(g
                     "authorizationReference": item.authorization_reference,
                     "clientId": str(item.client_id) if item.client_id else None,
                     "processId": str(item.process_id) if item.process_id else None,
-                    "owner": user_map.get(item.owner_id, principal.display_name if item.owner_id == principal.user_id else "Equipe SEMPER-FI"),
+                    "owner": item.operational_owner or user_map.get(item.owner_id, principal.display_name if item.owner_id == principal.user_id else "Equipe SEMPER-FI"),
                     "status": item.status,
                     "riskLevel": _frontend_risk(item.risk_level),
                     "scope": scopes_by_investigation.get(item.id, []),
-                    "priority": "media",
+                    "priority": {"low":"baixa","medium":"media","high":"alta","critical":"critica"}.get(item.priority, item.priority),
+                    "questions": item.questions,
+                    "expected": item.expected_result,
                     "purpose": item.purpose,
-                    "deadline": None,
+                    "deadline": item.deadline.isoformat() if item.deadline else None,
                     "retentionUntil": item.retention_until.isoformat() if item.retention_until else None,
                     "createdAt": item.created_at.isoformat(),
                     "updatedAt": item.updated_at.isoformat(),
@@ -370,7 +372,7 @@ async def frontend_bootstrap(request: Request, session: AsyncSession = Depends(g
                     "normalizedName": item.normalized_name,
                     "documentMasked": next((f"***{identifier.value_fingerprint[-8:]}" for identifier in identifiers_by_entity[item.id] if identifier.identifier_type == "document"), None),
                     "documentFingerprint": next((identifier.value_fingerprint[:12] for identifier in identifiers_by_entity[item.id] if identifier.identifier_type == "document"), None),
-                    "aliases": [],
+                    "aliases": item.aliases,
                     "verificationStatus": _map_status(item.verification_status, {"preliminary": "preliminar"}),
                     "confidence": item.confidence,
                     "notes": item.notes,
@@ -414,7 +416,7 @@ async def frontend_bootstrap(request: Request, session: AsyncSession = Depends(g
                     "evidenceIds": [str(item.evidence_id)] if item.evidence_id else [],
                     "createdAt": item.created_at.isoformat(),
                     "updatedAt": item.updated_at.isoformat(),
-                    "runId": None,
+                    "runId": str(item.connector_run_id) if item.connector_run_id else None,
                 }
                 for item in findings
             ],

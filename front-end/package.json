@@ -10,7 +10,7 @@
     "check": "node scripts/check.mjs && node scripts/sync-backend.mjs --check",
     "sync:backend": "node scripts/sync-backend.mjs",
     "test": "node --test tests/*.test.cjs",
-    "test:browser": "node tests/browser/functional.cjs && node tests/browser/auth-recovery.cjs && node tests/browser/client-profile.cjs",
+    "test:browser": "node tests/browser/functional.cjs && node tests/browser/auth-recovery.cjs && node tests/browser/client-profile.cjs && node tests/browser/dashboard.cjs",
     "test:browser:api": "node tests/browser/legal-live.cjs"
   },
   "devDependencies": {

@@ -22,6 +22,12 @@ const results = [], errors = [], unexpected = [], requests = [];
 let activeCase = 'startup', billingEnabled = true, checkoutUrl = 'https://sandbox.asaas.com/checkoutSession/show?id=test-only';
 let agentCreated = false, agentEnabled = true, uploaded = false, reportError = true, queryPolls = 0;
 let radarCreated = false, evidenceFinalizeFails = false, evidencePreserved = false;
+let alertsUnavailable = false;
+let bootstrapUnavailable = false, bootstrapDelay = 0;
+let toolOutcome='failed', toolHistoryUnavailable=false;
+const toolRuns=[];
+const reportDraftCommands=new Map();
+let reportDraftAmbiguous=true;
 const corporateFixture = {cnpj:'00000000000000',razao_social:xss,descricao_situacao_cadastral:'ATIVA',qsa:[{nome_socio:xss,cnpj_cpf_do_socio:'00000000000',qualificacao_socio:'Sócio'}]};
 const state = {
   clients: [{id:id(1),name:xss,type:'PF',document:'123.456.789-01',email:'fixture@example.test',phone:'',address:'',notes:xss,responsible:'',status:'ativo',createdAt:Date.now()},
@@ -58,7 +64,18 @@ async function mock(route, origin) {
   requests.push({method,path:pathname,body,headers:request.headers()});
   const reply = (json, status = 200) => route.fulfill({json,status});
   if (pathname === '/v1/auth/status') return reply({authenticated:true,password_enabled:true,registration_enabled:true});
-  if (pathname === '/v1/frontend/bootstrap') return reply({data:state,me:{display_name:'Operador isolado',email:'fixture@example.test',roles:['administrator']}});
+  if (pathname === '/v1/frontend/bootstrap') {if(bootstrapDelay)await delay(bootstrapDelay);return bootstrapUnavailable?reply({detail:'Isolated failure'},503):reply({data:state,me:{display_name:'Operador isolado',email:'fixture@example.test',roles:['administrator']}});}
+  // Dashboard projections are a separate server contract; the browser must not derive them from bootstrap.
+  const alerts={total:1,offset:0,limit:20,items:[{id:id(20),kind:'deadline',title:xss,description:xss,date:today,severity:'danger',section:'deadlines'}]};
+  if (pathname === '/v1/dashboard/alerts') return alertsUnavailable?reply({detail:'Isolated failure'},503):reply(alerts);
+  if (pathname === '/v1/dashboard/day') return reply({date:url.searchParams.get('date'),total:0,offset:0,limit:20,items:[]});
+  const dashboardMonth=url.searchParams.get('month')||today.slice(0,7);
+  if (pathname === '/v1/dashboard') return reply({
+    today,month:dashboardMonth,timezone:'America/Sao_Paulo',generated_at:new Date().toISOString(),
+    counts:{active_processes:1,critical_deadlines:1,overdue_deadlines:0,appointments_today:0,completed_appointments_today:0,pending_intimations:1,triage_intimations:1,stored_files:0,pending_files:0,total_audit_events:501},
+    financial:{forecast_revenue:'0.00',overdue_receivables:'10.00',overdue_receivables_count:1,overdue_payables:'0.00',overdue_payables_count:0,received_month:'0.00',paid_month:'0.00',net_month:'0.00',period_start:dashboardMonth+'-01',period_end:new Date(Date.UTC(Number(dashboardMonth.slice(0,4)),Number(dashboardMonth.slice(5)),0)).toISOString().slice(0,10),basis:'entry_date'},
+    upcoming_deadlines:{total:1,items:[{id:id(20),title:xss,date:today,process_number:null,days_remaining:0}]},urgent_actions:alerts,calendar:{days:dashboardMonth===today.slice(0,7)?[{date:today,appointments:0,deadlines:1}]:[]}
+  });
   if (pathname === '/v1/organization/mine') return reply({items:[{tenant_id:id(31),name:'Escritório isolado',role:'administrator',role_label:'Administrador',current:true}],can_manage:true});
   if (pathname === '/v1/organization/members') return reply({items:[teamMember],total:1,offset:0,limit:100});
   if (pathname === `/v1/organization/members/${id(30)}` && method==='PATCH') {teamMember={...teamMember,...body};return reply(teamMember);}
@@ -89,8 +106,23 @@ async function mock(route, origin) {
     return reply({intimation_id:id(4),movement_id:id(12),already_launched:false,status:'concluded'},201);
   }
   if (pathname === '/v1/osint/runs' && method === 'POST') {
+    if(body.connector_id==='osint_tools'){
+      const saved={id:id(100+toolRuns.length),connector_id:'osint_tools',status:toolOutcome,tool:body.payload.tool,target:body.payload.value,
+        investigation_id:body.investigation_id,purpose:body.purpose,legal_basis:body.legal_basis,authorization_reference:body.authorization_reference,
+        created_at:'2026-10-03T12:00:00Z',error_code:toolOutcome==='failed'?'ConnectorHTTPError':null,
+        raw_snapshot:toolOutcome==='failed'?null:{tool:body.payload.tool,target:body.payload.value,data:{A:[],TXT:[xss]},partial:true,limitations:['MX indisponível no teste']}};
+      toolRuns.unshift(saved);return reply({run_id:saved.id,status:'queued'},202);
+    }
     if(body.investigation_id){radarCreated=true;return reply({run_id:'radar-fixture',status:'queued'},202);}
     queryPolls=0;return reply({run_id:'query-fixture',job_id:'job-fixture',status:'queued'},202);
+  }
+  if(pathname==='/v1/osint/runs'&&method==='GET'&&url.searchParams.get('connector_id')==='osint_tools'){
+    if(toolHistoryUnavailable)return reply({detail:'Histórico indisponível no teste'},503);
+    const offset=Number(url.searchParams.get('offset')||0),limit=Number(url.searchParams.get('limit')||20);
+    return reply(toolRuns.slice(offset,offset+limit).map(({raw_snapshot,...row})=>row));
+  }
+  if(method==='GET'&&pathname.startsWith('/v1/osint/runs/')){
+    const saved=toolRuns.find(row=>pathname===`/v1/osint/runs/${row.id}`);if(saved)return reply(saved);
   }
   if (pathname === '/v1/osint/runs' && method === 'GET' && url.searchParams.get('kind')==='cnpj') return reply(radarCreated?[{id:'radar-fixture',connector_id:'brasilapi',status:'completed',purpose:xss,normalized_result:{razao_social:xss},created_at:'2026-09-29T12:00:00Z'}]:[]);
   if (pathname === '/v1/osint/runs/radar-fixture') return reply({id:'radar-fixture',status:'completed',raw_snapshot:corporateFixture});
@@ -106,6 +138,15 @@ async function mock(route, origin) {
   if (pathname === '/v1/evidences/uploads') {uploaded=true;return reply({evidence_id:id(7),status:'pending'},201);}
   if (pathname === `/v1/evidences/${id(7)}/events`) return reply([{event_type:'uploaded',details:xss}]);
   if (pathname === `/v1/evidences/${id(7)}/finalize`) {if(evidenceFinalizeFails)return reply({detail:'Cofre indisponível para teste.'},503);evidencePreserved=true;return reply({id:id(7),status:'preserved'});}
+  if(pathname===`/v1/investigations/${id(5)}/report-draft`&&method==='POST'){
+    await delay(80);
+    if(!reportDraftCommands.has(body.request_id)){
+      const saved={id:id(120),title:'Relatório da investigação isolada',version:1,status:'DRAFT',content_hash:'b'.repeat(64),body:{object_objective:'Conteúdo persistido da investigação',findings:[{title:xss}]}};
+      reports.push(saved);reportDraftCommands.set(body.request_id,saved);
+    }
+    const saved=reportDraftCommands.get(body.request_id);
+    return reportDraftAmbiguous?reply({detail:'Resposta perdida após salvar'},503):reply({report_id:saved.id,status:saved.status,content_hash:saved.content_hash},201);
+  }
   if (pathname === '/v1/reports') return reply(reports);
   if (pathname === `/v1/reports/${id(8)}/approve`) return reportError ? reply({detail:{policy_code:'MFA_REAUTH_REQUIRED',reason:'Confirme seu acesso novamente necessária.'}},403) : reply({status:'FINAL'});
   if (pathname === `/v1/reports/${id(9)}/download`) return reportError ? reply({detail:'Cofre indisponível para teste.'},503) : reply({url:'javascript:window.__xss=1',expires_in_seconds:60});
@@ -118,7 +159,7 @@ async function waitText(page, selector, text) {
   try { await page.waitForFunction(({selector,text})=>document.querySelector(selector)?.textContent.includes(text),{selector,text}); }
   catch (_) { throw Error(`${selector}: expected ${text}; received ${await page.locator(selector).textContent()}`); }
 }
-async function navigate(page, section) {await page.evaluate(section=>navigateSection(section),section);await page.locator('#contentWrapper > :first-child').waitFor();}
+async function navigate(page, section) {await page.evaluate(section=>navigateSection(section),section);await page.locator('#contentWrapper > :first-child').waitFor();if(section==='dashboard')await page.getByText('Dados consultados com sucesso.',{exact:true}).waitFor();}
 async function contextFields(page, prefix) {await page.locator(`#${prefix}Purpose`).fill('Teste isolado de integração da interface');await page.locator(`#${prefix}Basis`).selectOption('legitimo_interesse');await page.locator(`#${prefix}Reference`).fill('TESTE-ISOLADO');await page.locator(`#${prefix}Investigation`).selectOption(id(5));}
 async function runCase(name, page, operation) {
   activeCase=name;
@@ -143,6 +184,11 @@ async function runCase(name, page, operation) {
       await page.evaluate(()=>renderNotifications());await delay(60);
       assert.equal(await page.locator('#notifList img').count(),0);
       assert.ok((await page.locator('#notifList').textContent()).includes('<img'));
+      alertsUnavailable=true;await page.evaluate(()=>renderNotifications());
+      assert.equal(await page.locator('#notifBadge').textContent(),'?');
+      assert.match(await page.locator('#notifList [role=alert]').textContent(),/Não foi possível/);
+      alertsUnavailable=false;await page.evaluate(()=>renderNotifications());
+      assert.equal(await page.locator('#notifBadge').textContent(),'1');
     });
     await runCase('Global search protects records and query, masks documents, and supports keyboard',page,async()=>{
       await page.evaluate(query=>{SETTINGS.masked=true;runGlobalSearch(query);},'<img');
@@ -154,6 +200,20 @@ async function runCase(name, page, operation) {
       await result.focus();await page.keyboard.press('Enter');
       await page.waitForFunction(()=>appState.currentSection==='clients'&&!document.getElementById('modal').classList.contains('active'));
     });
+    await runCase('Dashboard detail navigation refreshes records and handles failure and later navigation',page,async()=>{
+      await navigate(page,'dashboard');await page.evaluate(()=>{DB.deadlines=[];});
+      await page.locator('[data-metric=critical_deadlines]').focus();await page.keyboard.press('Enter');
+      await page.waitForFunction(()=>appState.currentSection==='deadlines');
+      assert.ok((await page.evaluate(()=>DB.deadlines)).some(row=>row.id===id(20)));
+      await navigate(page,'dashboard');bootstrapUnavailable=true;
+      await page.evaluate(()=>openDashboardRecords('deadlines'));
+      assert.equal(await page.evaluate(()=>appState.currentSection),'dashboard');
+      assert.match(await page.locator('#dashboardStatus[role=alert]').textContent(),/lista atualizada/);
+      bootstrapUnavailable=false;bootstrapDelay=150;
+      await page.evaluate(()=>{window.navigationCheck=openDashboardRecords('deadlines');navigateSection('clients');});
+      await page.evaluate(()=>window.navigationCheck);bootstrapDelay=0;
+      assert.equal(await page.evaluate(()=>appState.currentSection),'clients');
+    });
     await runCase('All 21 sections render with API fixtures',page,async()=>{
       const sections=await page.evaluate(()=>SECTIONS.map(item=>item.id));assert.equal(sections.length,21);
       const unsafe=[];
@@ -162,6 +222,27 @@ async function runCase(name, page, operation) {
         if(await page.evaluate(()=>window.__xss))unsafe.push({section,nodes:await page.locator('#contentWrapper img[onerror]').evaluateAll(nodes=>nodes.map(node=>node.parentElement.outerHTML))});
       }
       assert.deepEqual(unsafe,[],'Untrusted record markup was interpreted');
+    });
+    await runCase('Investigation history reads persisted events and local operations cannot fabricate audit',page,async()=>{
+      const unchanged=await page.evaluate(async()=>{
+        const before=JSON.stringify(DB.audit);
+        audit('osint','fabricated','local-only');await osintAudit('fabricated','local-only');
+        return before===JSON.stringify(DB.audit);
+      });
+      assert.equal(unchanged,true);
+      state.audit=[
+        {id:id(90),module:'osint',timestamp:'2026-10-02T10:00:00Z',actor:'Operador do teste',action:xss,osintMeta:{investigationId:id(5)}},
+        {id:id(91),module:'osint',timestamp:'2026-10-01T10:00:00Z',actor:'Operador do teste',action:'Atividade anterior do banco',osintMeta:{investigationId:id(5)}},
+      ];
+      await page.evaluate(id=>{DB.audit=[];openInvestigationWorkspace(id);switchOsintTab('timeline');},id(5));
+      await page.locator('[data-timeline-refresh]').waitFor();
+      const rows=page.locator('#investigationTimeline .timeline-content');
+      assert.equal(await rows.count(),2);assert.equal(await rows.first().textContent(),'Atividade anterior do banco');
+      assert.ok((await rows.last().textContent()).includes('<img'));assert.equal(await page.locator('#investigationTimeline img').count(),0);
+      bootstrapUnavailable=true;await page.locator('[data-timeline-refresh]').click();await page.locator('#investigationTimeline [role=alert]').waitFor();
+      assert.equal(await rows.count(),0);
+      bootstrapUnavailable=false;await page.locator('[data-timeline-refresh]').click();await page.locator('#investigationTimeline .timeline-content').first().waitFor();
+      assert.equal(await rows.count(),2);
     });
     await runCase('Native legal validation and literal untrusted form values',page,async()=>{
       await navigate(page,'clients');await page.evaluate(()=>openClientForm());
@@ -243,17 +324,69 @@ async function runCase(name, page, operation) {
       await page.locator('[data-radar-run]').click();await waitText(page,'#radarStatus','Consulta concluída e registrada');
       assert.equal(count('POST','/v1/osint/runs'),before+1);assert.equal(await page.locator('#radarHistory img').count(),0);
     });
-    await runCase('DNS outage does not announce success and keeps the entered target',page,async()=>{
+    await runCase('OSINT requires purpose and authorization before submitting; server failure keeps entered values',page,async()=>{
       await navigate(page,'osinttools');await page.evaluate(()=>selectOsintTool('dns'));
-      await page.locator('#otTarget').fill('example.test');await page.locator('#otConsent').check();await page.evaluate(()=>runOsintTool());
-      await waitText(page,'#otResult','Nenhum resultado foi confirmado');
-      assert.equal(await page.locator('#otTarget').inputValue(),'example.test');assert.equal(await page.locator('#otResult .alert-success').count(),0);
+      const before=count('POST','/v1/osint/runs');
+      await page.locator('#otTarget').fill('example.com');await page.locator('#otConsent').check();await page.evaluate(()=>runOsintTool());
+      assert.equal(count('POST','/v1/osint/runs'),before);
+      await contextFields(page,'ot');await page.evaluate(()=>runOsintTool());
+      await waitText(page,'#otResult','Consulte o histórico');
+      assert.equal(await page.locator('#otTarget').inputValue(),'example.com');assert.equal(await page.locator('#otResult .alert-success').count(),0);
+      assert.equal(count('POST','/v1/osint/runs'),before+1);
+      assert.equal(await page.locator('#otPurpose').inputValue(),'Teste isolado de integração da interface');
+      assert.equal(await page.locator('#otReference').inputValue(),'TESTE-ISOLADO');
+      await waitText(page,'#otHistory','Falhou');
+    });
+    await runCase('OSINT stores authorized context, labels partial results and reopens history after reload without POST',page,async()=>{
+      toolOutcome='completed';const before=count('POST','/v1/osint/runs');
+      await page.locator('button[onclick="runOsintTool()"]').evaluate(button=>{button.click();button.click();});
+      await waitText(page,'#otResult','Consulta parcial');
+      assert.equal(count('POST','/v1/osint/runs'),before+1);
+      const body=requests.filter(row=>row.method==='POST'&&row.path==='/v1/osint/runs').at(-1).body;
+      assert.equal(body.connector_id,'osint_tools');assert.equal(body.payload.tool,'dns');assert.equal(body.payload.authorized,true);
+      assert.equal(body.investigation_id,id(5));assert.deepEqual(body.scope_codes,['digital_defensive']);
+      await waitText(page,'#otRawWrap','MX indisponível no teste');assert.equal(await page.locator('#otRawWrap img').count(),0);
+      const savedId=await page.evaluate(()=>osintToolsState.lastResult.runId);
+      await page.reload();await page.locator('body:not(.auth-pending) .page-title').waitFor();await navigate(page,'osinttools');
+      assert.equal(await page.evaluate(()=>osintToolsState.lastResult),null);
+      await page.locator(`[data-tool-run="${savedId}"]`).focus();await page.keyboard.press('Enter');
+      await waitText(page,'#otResult','Consulta parcial');
+      assert.equal(await page.evaluate(()=>osintToolsState.lastResult.runId),savedId);
+      assert.equal(count('POST','/v1/osint/runs'),before+1);assert.equal(await page.locator('#otHistory img').count(),0);
+    });
+    await runCase('OSINT history failure is explicit and retry reads the server without a new query',page,async()=>{
+      const before=count('POST','/v1/osint/runs');toolHistoryUnavailable=true;
+      await page.evaluate(()=>loadOsintToolHistory());await page.locator('#otHistory [role=alert]').waitFor();
+      assert.equal(await page.locator('#otHistory [data-tool-run]').count(),0);
+      assert.doesNotMatch(await page.locator('#otHistory').textContent(),/Nenhuma consulta/);
+      toolHistoryUnavailable=false;await page.locator('#otHistory button').click();await page.locator('#otHistory [data-tool-run]').first().waitFor();
+      assert.equal(await page.locator('#otHistory [data-tool-run]').count(),2);assert.equal(count('POST','/v1/osint/runs'),before);
+    });
+    await runCase('Investigative draft retries its saved command and reloads reports from server records',page,async()=>{
+      const endpoint=`/v1/investigations/${id(5)}/report-draft`,before=count('POST',endpoint);
+      await page.evaluate(async id=>{DB.findings=[{title:'FORGED LOCAL FINDING'}];await Promise.all([generateOsintReport(id,true),generateOsintReport(id,true)]);},id(5));
+      assert.equal(count('POST',endpoint),before+1);assert.equal(reportDraftCommands.size,1);
+      assert.equal(await page.evaluate(()=>appState.currentSection),'osinttools');
+      const command=last(endpoint).body;assert.deepEqual(Object.keys(command),['request_id']);
+      reportDraftAmbiguous=false;await page.evaluate(id=>generateOsintReport(id,true),id(5));
+      assert.equal(count('POST',endpoint),before+2);assert.equal(last(endpoint).body.request_id,command.request_id);
+      assert.equal(reportDraftCommands.size,1);await page.waitForFunction(()=>appState.currentSection==='reports');
+      await waitText(page,'#contentWrapper','Relatório da investigação isolada');
+      assert.ok(!(await page.locator('#contentWrapper').textContent()).includes('FORGED LOCAL FINDING'));
+      assert.equal(await page.locator('#contentWrapper img').count(),0);
+      await page.reload();await page.locator('body:not(.auth-pending) .page-title').waitFor();await navigate(page,'reports');
+      await waitText(page,'#contentWrapper','Relatório da investigação isolada');assert.equal(reportDraftCommands.size,1);
+      await navigate(page,'osinttools');
     });
     await runCase('Evidence finalization can retry its receipt without another upload',page,async()=>{
-      await page.evaluate(()=>{selectOsintTool('dns');osintToolsState.lastResult={ok:true,tool:{name:'DNS',kind:'dns'},target:'example.test',data:{A:[]},at:Date.now()};renderSection('osinttools');});
+      const savedId=toolRuns.find(row=>row.status==='completed').id;
+      await page.evaluate(id=>openOsintToolRun(id),savedId);
+      await waitText(page,'#otResult','Consulta parcial');
+      await page.evaluate(()=>{osintToolsState.lastResult.data.data.TXT=['FORGED BROWSER VALUE'];});
       const before=count('POST','/v1/evidences/uploads');evidenceFinalizeFails=true;
       await page.locator('button[onclick="preserveOsintResult()"]').evaluate(button=>{button.click();button.click();});
       await waitText(page,'#otResult','Retomar preservação');assert.equal(count('POST','/v1/evidences/uploads'),before+1);
+      const payload=last('/v1/evidences/uploads').body;assert.ok(payload.includes('MX indisponível no teste'));assert.ok(!payload.includes('FORGED BROWSER VALUE'));
       assert.equal(await page.evaluate(()=>osintToolsState.lastResult.preserved),false);
       evidenceFinalizeFails=false;await page.locator('button[onclick="preserveOsintResult()"]').click();await waitText(page,'#otResult','Evidência preservada');
       assert.equal(count('POST','/v1/evidences/uploads'),before+1);assert.equal(evidencePreserved,true);

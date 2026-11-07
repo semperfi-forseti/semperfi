@@ -43,6 +43,8 @@ settings = get_settings()
 
 
 async def _decision(session: AsyncSession, principal: Principal, request: Request, context: PolicyContext):
+    if context.action in {"investigation.list", "investigation.read", "entity.read", "finding.read", "relation.read"} and not principal.has_any_role("administrator", "manager", "lawyer", "investigator", "analyst", "auditor"):
+        raise HTTPException(status_code=403, detail="Perfil não autorizado para consultar investigações.")
     if context.action == "osint.run.read" and not principal.has_any_role("administrator", "manager", "lawyer", "investigator", "analyst", "auditor"):
         raise HTTPException(status_code=403, detail="Perfil não autorizado para consultar o histórico de pesquisas.")
     if context.action.rsplit(".", 1)[-1] in {"create", "update", "delete"} and not principal.has_any_role("administrator", "manager", "lawyer", "investigator", "analyst"):
@@ -72,6 +74,8 @@ async def _target_payload(session: AsyncSession, tenant_id: uuid.UUID, body: Con
     payload = dict(body.payload)
     if not body.target_entity_id:
         return payload
+    if body.connector_id == "osint_tools":
+        raise HTTPException(422, "Informe o alvo da ferramenta no formulário da consulta.")
     if not body.investigation_id:
         raise HTTPException(status_code=422, detail="Informe a investigação do alvo selecionado.")
     entity = await _entity(session, tenant_id, body.investigation_id, body.target_entity_id)
@@ -106,6 +110,7 @@ def _serialize_finding(item: Finding) -> dict:
         "investigation_id": item.investigation_id,
         "entity_id": item.entity_id,
         "evidence_id": item.evidence_id,
+        "connector_run_id": item.connector_run_id,
         "classification": item.classification,
         "title": item.title,
         "statement": item.statement,
@@ -121,6 +126,35 @@ def _serialize_finding(item: Finding) -> dict:
     }
 
 
+def _serialize_investigation(item: Investigation, scope_codes: list[str]) -> dict:
+    return {
+        "id": item.id, "title": item.title, "category": item.category,
+        "objective": item.objective, "hypothesis": item.hypothesis, "purpose": item.purpose,
+        "legal_basis": item.legal_basis, "authorization_reference": item.authorization_reference,
+        "proportionality_assessment": item.proportionality_assessment, "risk_level": item.risk_level,
+        "status": item.status, "client_id": item.client_id, "process_id": item.process_id,
+        "retention_until": item.retention_until, "scope_codes": scope_codes, "owner_id": item.owner_id,
+        "operational_owner": item.operational_owner, "priority": item.priority, "deadline": item.deadline,
+        "questions": item.questions, "expected_result": item.expected_result,
+        "created_at": item.created_at, "updated_at": item.updated_at,
+    }
+
+
+async def _finding_run(session: AsyncSession, tenant_id: uuid.UUID, investigation_id: uuid.UUID,
+                       run_id: uuid.UUID, entity_id: uuid.UUID | None) -> ConnectorRun:
+    run = await session.scalar(select(ConnectorRun).where(
+        ConnectorRun.id == run_id, ConnectorRun.tenant_id == tenant_id,
+        ConnectorRun.investigation_id == investigation_id,
+    ).with_for_update())
+    if not run:
+        raise HTTPException(status_code=404, detail="Execução não encontrada nesta investigação.")
+    if run.status != "completed" or run.error_code or run.raw_snapshot is None:
+        raise HTTPException(status_code=409, detail="O achado só pode referenciar uma consulta concluída com sucesso.")
+    if entity_id and run.target_entity_id and entity_id != run.target_entity_id:
+        raise HTTPException(status_code=422, detail="O alvo do achado deve corresponder ao alvo da consulta.")
+    return run
+
+
 @router.get("/investigations")
 async def list_investigations(request: Request, session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
     cid, _ = await _decision(session, principal, request, PolicyContext(action="investigation.list"))
@@ -129,64 +163,54 @@ async def list_investigations(request: Request, session: AsyncSession = Depends(
     scopes_by_investigation: dict[uuid.UUID, list[str]] = {}
     for scope in scopes:
         scopes_by_investigation.setdefault(scope.investigation_id, []).append(scope.scope_code)
+    result = [_serialize_investigation(row, scopes_by_investigation.get(row.id, [])) for row in rows]
     await append_audit(session, principal, request, action="investigation.list", resource_type="investigation", resource_id=None, correlation_id=cid)
     await session.commit()
-    return [
-        {
-            "id": row.id,
-            "title": row.title,
-            "category": row.category,
-            "objective": row.objective,
-            "hypothesis": row.hypothesis,
-            "purpose": row.purpose,
-            "legal_basis": row.legal_basis,
-            "authorization_reference": row.authorization_reference,
-            "proportionality_assessment": row.proportionality_assessment,
-            "risk_level": row.risk_level,
-            "status": row.status,
-            "client_id": row.client_id,
-            "process_id": row.process_id,
-            "retention_until": row.retention_until,
-            "scope_codes": scopes_by_investigation.get(row.id, []),
-            "owner_id": row.owner_id,
-            "created_at": row.created_at,
-            "updated_at": row.updated_at,
-        }
-        for row in rows
-    ]
+    return result
 
 
 @router.post("/investigations", status_code=status.HTTP_201_CREATED)
 async def create_investigation(body: InvestigationCreate, request: Request, session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
     cid, decision = await _decision(session, principal, request, PolicyContext(action="investigation.create", purpose=body.purpose, legal_basis=body.legal_basis, authorization_reference=body.authorization_reference, risk_level=body.risk_level, scope_codes=set(body.scope_codes)))
     await _validate_links(session, principal.tenant_id, body.client_id, body.process_id)
-    item = Investigation(tenant_id=principal.tenant_id, owner_id=principal.user_id, title=body.title, category=body.category, objective=body.objective, hypothesis=body.hypothesis, purpose=body.purpose, legal_basis=body.legal_basis, authorization_reference=body.authorization_reference, proportionality_assessment=body.proportionality_assessment, risk_level=body.risk_level, client_id=body.client_id, process_id=body.process_id, retention_until=body.retention_until, status="aguardando_aprovacao" if decision.effect == PolicyEffect.REQUIRE_APPROVAL else "em_coleta")
+    item = Investigation(tenant_id=principal.tenant_id, owner_id=principal.user_id, **body.model_dump(exclude={"scope_codes"}), status="aguardando_aprovacao" if decision.effect == PolicyEffect.REQUIRE_APPROVAL else "em_coleta")
     session.add(item); await session.flush()
     for scope in body.scope_codes: session.add(InvestigationScope(investigation_id=item.id, scope_code=scope, approved=decision.effect == PolicyEffect.ALLOW))
     await append_audit(session, principal, request, action="investigation.create", resource_type="investigation", resource_id=item.id, correlation_id=cid, metadata_safe={"category": body.category, "risk_level": body.risk_level})
-    await session.commit(); return {"id": item.id, "status": item.status, "policy_effect": decision.effect}
+    result = {**_serialize_investigation(item, body.scope_codes), "policy_effect": decision.effect}
+    await session.commit()
+    return result
 
 
 @router.get("/investigations/{investigation_id}")
 async def get_investigation(investigation_id: uuid.UUID, request: Request, session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
     cid, _ = await _decision(session, principal, request, PolicyContext(action="investigation.read")); inv = await _investigation(session, principal.tenant_id, investigation_id)
-    entities = list((await session.scalars(select(Entity).where(Entity.investigation_id == inv.id))).all())
-    relations = list((await session.scalars(select(EntityRelation).where(EntityRelation.investigation_id == inv.id))).all())
+    entities = list((await session.scalars(select(Entity).where(Entity.investigation_id == inv.id, Entity.tenant_id == principal.tenant_id, Entity.verification_status != "deleted"))).all())
+    entity_ids = [item.id for item in entities]
+    relations = list((await session.scalars(select(EntityRelation).where(EntityRelation.investigation_id == inv.id,
+        EntityRelation.tenant_id == principal.tenant_id, EntityRelation.source_entity_id.in_(entity_ids), EntityRelation.target_entity_id.in_(entity_ids)))).all())
+    scopes = list((await session.scalars(select(InvestigationScope.scope_code).where(InvestigationScope.investigation_id == inv.id))).all())
+    findings = list((await session.scalars(select(Finding).where(Finding.investigation_id == inv.id, Finding.tenant_id == principal.tenant_id).order_by(Finding.created_at, Finding.id))).all())
+    result = {**_serialize_investigation(inv, scopes),
+        "entities": [{"id": x.id, "type": x.entity_type, "name": x.display_name, "confidence": x.confidence, "aliases": x.aliases} for x in entities],
+        "relations": [{"id": x.id, "source_entity_id": x.source_entity_id, "target_entity_id": x.target_entity_id, "type": x.relation_type, "confidence": x.confidence, "human_validated": x.human_validated} for x in relations],
+        "findings": [_serialize_finding(item) for item in findings]}
     await append_audit(session, principal, request, action="investigation.read", resource_type="investigation", resource_id=inv.id, correlation_id=cid); await session.commit()
-    return {"id": inv.id, "title": inv.title, "status": inv.status, "objective": inv.objective, "purpose": inv.purpose, "legal_basis": inv.legal_basis, "risk_level": inv.risk_level, "entities": [{"id": x.id, "type": x.entity_type, "name": x.display_name, "confidence": x.confidence} for x in entities], "relations": [{"id": x.id, "source_entity_id": x.source_entity_id, "target_entity_id": x.target_entity_id, "type": x.relation_type, "confidence": x.confidence, "human_validated": x.human_validated} for x in relations]}
+    return result
 
 
 @router.post("/investigations/{investigation_id}/entities", status_code=status.HTTP_201_CREATED)
 async def create_entity(investigation_id: uuid.UUID, body: EntityCreate, request: Request, session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
     cid, _ = await _decision(session, principal, request, PolicyContext(action="entity.create")); await _investigation(session, principal.tenant_id, investigation_id)
-    entity = Entity(tenant_id=principal.tenant_id, investigation_id=investigation_id, entity_type=body.entity_type, display_name=body.display_name, normalized_name=body.normalized_name, verification_status=body.verification_status, confidence=body.confidence, notes=body.notes)
+    entity = Entity(tenant_id=principal.tenant_id, investigation_id=investigation_id, **body.model_dump(exclude={"identifiers"}))
     session.add(entity); await session.flush()
     for identifier in body.identifiers:
         value = identifier.value
         session.add(EntityIdentifier(entity_id=entity.id, identifier_type=identifier.type, value_ciphertext=cipher.encrypt(value) or "", value_fingerprint=cipher.fingerprint(value) or "", is_primary=identifier.primary))
     await append_audit(session, principal, request, action="entity.create", resource_type="entity", resource_id=entity.id, correlation_id=cid)
+    result = {"id": entity.id, "verification_status": entity.verification_status, "confidence": entity.confidence, "aliases": entity.aliases}
     await session.commit()
-    return {"id": entity.id, "verification_status": entity.verification_status, "confidence": entity.confidence}
+    return result
 
 
 @router.post("/investigations/{investigation_id}/relations", status_code=status.HTTP_201_CREATED)
@@ -237,12 +261,15 @@ async def create_finding(investigation_id: uuid.UUID, body: FindingCreate, reque
     await _investigation(session, principal.tenant_id, investigation_id)
     await validate_references(session, principal.tenant_id, investigation_id, [body.evidence_id] if body.evidence_id else [])
     if body.entity_id: await _entity(session, principal.tenant_id, investigation_id, body.entity_id)
+    if body.connector_run_id:
+        await _finding_run(session, principal.tenant_id, investigation_id, body.connector_run_id, body.entity_id)
     item = Finding(tenant_id=principal.tenant_id, investigation_id=investigation_id, **body.model_dump())
     session.add(item)
     await session.flush()
     await append_audit(session, principal, request, action="finding.create", resource_type="finding", resource_id=item.id, correlation_id=cid, metadata_safe={"classification": item.classification})
+    result = _serialize_finding(item)
     await session.commit()
-    return _serialize_finding(item)
+    return result
 
 
 @router.patch("/findings/{finding_id}")
@@ -255,16 +282,30 @@ async def update_finding(finding_id: uuid.UUID, body: FindingUpdate, request: Re
     evidence_id = patch.get("evidence_id", item.evidence_id)
     await validate_references(session, principal.tenant_id, item.investigation_id, [evidence_id] if evidence_id else [])
     if item.entity_id: await _entity(session, principal.tenant_id, item.investigation_id, item.entity_id)
+    if item.connector_run_id:
+        await _finding_run(session, principal.tenant_id, item.investigation_id, item.connector_run_id, item.entity_id)
     for key, value in patch.items():
         setattr(item, key, value)
     await append_audit(session, principal, request, action="finding.update", resource_type="finding", resource_id=item.id, correlation_id=cid, metadata_safe={"human_validated": item.human_validated, "reviewer_name": principal.display_name if item.human_validated else None})
+    await session.flush()
+    await session.refresh(item)
+    result = _serialize_finding(item)
     await session.commit()
-    return _serialize_finding(item)
+    return result
 
 
 @router.post("/osint/runs", status_code=status.HTTP_202_ACCEPTED)
 async def create_connector_run(body: ConnectorRunCreate, request: Request, wait: bool = False, session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
-    limits = {"brasilapi": 60, "transparency": 90, "datajud": 120, "rdap_dns": 30}
+    limits = {"brasilapi": 60, "transparency": 90, "datajud": 120, "rdap_dns": 30, "osint_tools": 30}
+    if body.connector_id == "osint_tools":
+        from app.connectors.osint_tools import normalized_input
+        try:
+            tool, value = normalized_input(body.payload)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        if tool in {"headers", "domain", "dns", "crt"} and "digital_defensive" not in body.scope_codes:
+            raise HTTPException(422, "Esta ferramenta exige escopo digital defensivo e autorização documentada.")
+        body.payload = {"tool": tool, "value": value, "authorized": True}
     permitted = await rate_limiter.allow(
         f"{principal.tenant_id}:{principal.user_id}:{body.connector_id}",
         limits[body.connector_id],
@@ -275,7 +316,7 @@ async def create_connector_run(body: ConnectorRunCreate, request: Request, wait:
     if decision.effect == PolicyEffect.REQUIRE_APPROVAL:
         raise HTTPException(status_code=202, detail={"policy_code": decision.code, "reason": decision.reason, "status": "approval_required"})
     await validate_references(session, principal.tenant_id, body.investigation_id, [])
-    payload = {**(await _target_payload(session, principal.tenant_id, body)), "authorization_reference": body.authorization_reference, "scope_codes": body.scope_codes}
+    payload = {**(await _target_payload(session, principal.tenant_id, body)), "authorization_reference": body.authorization_reference, "scope_codes": body.scope_codes, "legal_basis": body.legal_basis, "risk_level": body.risk_level}
     run = ConnectorRun(tenant_id=principal.tenant_id, investigation_id=body.investigation_id, target_entity_id=body.target_entity_id, connector_id=body.connector_id, status="queued", purpose=body.purpose, correlation_id=cid, request_hash=request_hash(payload), request_payload=payload)
     session.add(run); await session.flush()
     run.job_id = str(uuid.uuid4())
@@ -302,9 +343,10 @@ async def create_connector_run(body: ConnectorRunCreate, request: Request, wait:
 @router.get("/osint/runs")
 async def list_connector_runs(
     request: Request,
-    connector_id: Literal["brasilapi", "transparency", "datajud", "rdap_dns"] | None = None,
+    connector_id: Literal["brasilapi", "transparency", "datajud", "rdap_dns", "osint_tools"] | None = None,
     kind: Literal["cnpj", "cep", "ddd", "bank", "holidays"] | None = None,
     limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=1000000),
     session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal),
 ):
     cid, _ = await _decision(session, principal, request, PolicyContext(action="osint.run.read"))
@@ -313,12 +355,14 @@ async def list_connector_runs(
         statement = statement.where(ConnectorRun.connector_id == connector_id)
     if kind is not None:
         statement = statement.where(ConnectorRun.request_payload["kind"].as_string() == kind)
-    rows = list((await session.scalars(statement.order_by(ConnectorRun.created_at.desc(), ConnectorRun.id.desc()).limit(limit))).all())
+    rows = list((await session.scalars(statement.order_by(ConnectorRun.created_at.desc(), ConnectorRun.id.desc()).offset(offset).limit(limit))).all())
     # Summaries omit request payloads, authorization references and raw snapshots.
     # Authorized users open the existing detail route to inspect a saved result.
     result = [{"id": row.id, "connector_id": row.connector_id, "status": row.status,
                "purpose": row.purpose, "created_at": row.created_at,
-               "normalized_result": row.normalized_result, "limitations": row.limitations}
+               "normalized_result": row.normalized_result if row.connector_id != "osint_tools" else None, "limitations": row.limitations,
+               "tool": row.request_payload.get("tool") if row.connector_id == "osint_tools" else None,
+               "target": row.request_payload.get("value") if row.connector_id == "osint_tools" else None}
               for row in rows]
     await append_audit(session, principal, request, action="osint.run.list", resource_type="connector_run",
                        resource_id=None, correlation_id=cid, metadata_safe={"connector_id": connector_id, "kind": kind, "count": len(rows)})
@@ -332,7 +376,11 @@ async def get_connector_run(run_id: uuid.UUID, request: Request, session: AsyncS
     run = await session.scalar(select(ConnectorRun).where(ConnectorRun.id == run_id, ConnectorRun.tenant_id == principal.tenant_id))
     if not run: raise HTTPException(status_code=404, detail="Execução não encontrada.")
     await append_audit(session, principal, request, action="osint.run.read", resource_type="connector_run", resource_id=run.id, correlation_id=cid); await session.commit()
-    return {"id": run.id, "connector_id": run.connector_id, "status": run.status, "normalized_result": run.normalized_result, "raw_snapshot": run.raw_snapshot, "limitations": run.limitations, "error_code": run.error_code, "correlation_id": run.correlation_id}
+    return {"id": run.id, "connector_id": run.connector_id, "status": run.status, "normalized_result": run.normalized_result, "raw_snapshot": run.raw_snapshot, "limitations": run.limitations, "error_code": run.error_code, "correlation_id": run.correlation_id,
+            "investigation_id": run.investigation_id, "created_at": run.created_at, "response_hash": run.response_hash,
+            "purpose": run.purpose, "legal_basis": run.request_payload.get("legal_basis"),
+            "tool": run.request_payload.get("tool") if run.connector_id == "osint_tools" else None,
+            "target": run.request_payload.get("value") if run.connector_id == "osint_tools" else None}
 
 
 @router.get("/jobs/{job_id}/events")

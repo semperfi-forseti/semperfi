@@ -30,6 +30,11 @@ from app.workers.tasks import run_supervised_agent
 router = APIRouter(tags=["Reports and supervised agents"])
 
 
+def _report_read_role(principal: Principal) -> None:
+    if not principal.has_any_role("administrator", "manager", "lawyer", "investigator", "analyst", "auditor"):
+        raise HTTPException(status_code=403, detail="Perfil não autorizado para consultar relatórios.")
+
+
 async def _policy(session: AsyncSession, principal: Principal, request: Request, context: PolicyContext):
     cid = correlation_id(request); decision = await policy_engine.evaluate(session, principal, context, cid)
     if decision.effect in {PolicyEffect.DENY, PolicyEffect.REQUIRE_MFA}: raise HTTPException(status_code=403, detail={"policy_code": decision.code, "reason": decision.reason})
@@ -38,6 +43,7 @@ async def _policy(session: AsyncSession, principal: Principal, request: Request,
 
 @router.get("/reports")
 async def list_reports(request: Request, investigation_id: uuid.UUID | None = None, session: AsyncSession = Depends(get_db), principal: Principal = Depends(get_current_principal)):
+    _report_read_role(principal)
     cid, _ = await _policy(session, principal, request, PolicyContext(action="report.read"))
     query = select(Report).where(Report.tenant_id == principal.tenant_id)
     if investigation_id:
@@ -171,6 +177,7 @@ async def approve_report(report_id: uuid.UUID, request: Request, session: AsyncS
 
 @router.get("/reports/{report_id}/download")
 async def download_report(report_id: uuid.UUID, request: Request, session: AsyncSession = Depends(get_db), principal: Principal = Depends(require_recent_mfa)):
+    _report_read_role(principal)
     cid, _ = await _policy(session, principal, request, PolicyContext(action="data.export", requires_mfa=False))
     report = await session.scalar(select(Report).where(Report.id == report_id, Report.tenant_id == principal.tenant_id))
     if not report or report.status != "FINAL" or not report.storage_key or not report.storage_version_id: raise HTTPException(status_code=404, detail="Relatório final não disponível.")

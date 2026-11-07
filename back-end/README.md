@@ -254,6 +254,17 @@ As capacidades da API e as ações disponíveis na UI têm escopos diferentes:
 - TACER/SIERA possuem formulários, histórico, detalhe e revisão na interface. Planejam o trabalho com regras fixas, sem consulta externa nem inferência por IA. Checklists e matriz ACH sem persistência foram retirados; o roteiro consultivo foi mantido. A seção Agentes IA permanece desacoplada e exige revisão dos resultados.
 - A aba Auditoria consulta eventos persistidos e `/audit-events/verify-chain`. Atividades temporárias do navegador não são apresentadas nessa aba como prova da cadeia do servidor.
 
+### Indicadores do dashboard
+
+- `GET /v1/dashboard?month=YYYY-MM`: agregados por organização, resumo financeiro do mês, cinco próximos prazos, cinco alertas prioritários e contagens do calendário. Sem `month`, usa o mês atual em `America/Sao_Paulo`.
+- `GET /v1/dashboard/alerts?offset=0&limit=20`: todos os alertas paginados; prazos pendentes vencidos/até dois dias, intimações em triagem e lançamentos explicitamente vencidos. Receitas e despesas são tipos distintos.
+- `GET /v1/dashboard/day?date=YYYY-MM-DD&offset=0&limit=20`: prazos pendentes e compromissos não cancelados do dia. Registros concluídos da agenda mantêm sua situação visível.
+- Autenticação e política de leitura do núcleo jurídico; filtros por `tenant_id` e exclusão lógica; nenhuma referência de processo de outra organização. Leituras auditadas e respostas `Cache-Control: no-store`. O total auditado consulta toda a tabela da organização, incluindo a leitura concluída do painel.
+- Valores monetários calculados no backend e serializados com duas casas decimais. O filtro mensal usa `entry_date` (data do lançamento), pois não existe data financeira de vencimento ou pagamento. `forecast` e `overdue` seguem a situação persistida, sem inferência a partir da data de lançamento.
+- Arquivos contam como armazenados somente com situação `preserved`/`validated` e bucket, chave e versão registrados. Metadados pendentes não entram nesse total; não há chamada ao cofre durante a consulta.
+
+Implementação em `app/services/dashboard.py` e `app/api/v1/dashboard.py`, sem alteração de schema. Testes em `tests/integration/test_dashboard.py` e no navegador com API/SQLite isolados. A validação local não substitui carga, concorrência e RLS em PostgreSQL no destino.
+
 ## Requisitos não funcionais
 
 | ID | Requisito | Evidência/limite |
@@ -381,3 +392,12 @@ Validação desta entrega:
 - **67 arquivos do frontend verificados e 48 sincronizados**. Nenhuma credencial foi incluída nos módulos ou testes; nenhum pagamento, e-mail ou consulta externa foi disparado por essa validação.
 
 Continuam necessários: monitoramento/publicações, demais OSINT Tools e pesquisas do Radar, execução do API Explorer, ciclo comercial completo e homologação HTTPS/Asaas Sandbox, Ollama, Redis/workers, PostgreSQL/RLS, cofre, backup/restauração e acessibilidade manual. Testes locais aprovados não significam aceite integral de lançamento.
+
+### Dashboard e fonte dos dados — validação em 03/10/2026
+
+- **510 testes Python passaram**, incluindo 38 testes novos: banco vazio/populado, organizações distintas, exclusões lógicas, valores por mês, prazos vencidos, compromissos cancelados, armazenamento incompleto, mais de 500 eventos, paginação, permissões, horário de Brasília e atualização após escrita. Ruff aprovado. Permanece apenas o aviso de depreciação TestClient/httpx já existente.
+- **69 testes Node, 50 cenários/grupos de navegador com respostas controladas e 12 grupos com API/SQLite reais** aprovados, sem erros JavaScript. O teste real demonstra que alterações em arrays do navegador não mudam os indicadores, novas escritas no banco aparecem após atualização e abrir as listas pelo painel busca registros recentes.
+- **70 arquivos verificados em UTF-8/sintaxe/charset e 50 sincronizados**. Os dados de cenários existem exclusivamente em bancos descartáveis; não houve população fictícia nem migration no banco operacional.
+- As rotas novas estão carregadas no servidor local. Acesso anônimo a `/v1/dashboard` pelo proxy continua retornando 401. Os eventos de auditoria continuam gravados pelo backend; os auxiliares antigos do frontend deixaram de fabricar eventos em memória.
+
+Limites: os testes funcionais usaram SQLite; a compatibilidade da união monetária dos alertas foi verificada por compilação PostgreSQL, sem executar esse banco. O período financeiro ainda usa data do lançamento. A timeline da investigação consulta o recorte autenticado de até 500 eventos do bootstrap; não declara histórico completo. As demais pendências de persistência de OSINT/investigações/relatórios estão discriminadas no README do frontend.
